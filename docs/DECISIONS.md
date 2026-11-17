@@ -163,3 +163,28 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   tokens). Pre-token splits were also identical on the latter.
 - **Impact:** none on CUDA/MPI (host-only). `dev_only/requirements.txt` pins
   `tokenizers==0.21.1` for regenerating golden files.
+
+## 2026-11-17: prepare_data details (P1.3)
+
+- **Token file header:** §7.3 lists `magic(4) + u32 version + u32
+  vocab_size + u64 num_tokens + 8 reserved` = 28 bytes but calls the header
+  32 bytes. The extra 4 bytes are taken as natural-alignment padding before
+  the u64, which is the layout a C struct with those fields has:
+  `num_tokens` at offset 16, reserved at 24..31, bytes 12..15 zero. Every
+  field is little-endian and written byte by byte. Spelled out in
+  `include/tslm/token_file.h` (frozen).
+- **Story splitting:** input is split on the literal `<|endoftext|>`. Each
+  story is trimmed of leading/trailing ASCII whitespace (the files put `\n`
+  on both sides of every separator) and empty stories are skipped. One EOS
+  (new id 1) follows every story.
+- **Truncation:** `--max_tokens N` keeps whole stories while the running
+  total, EOS included, stays ≤ N. `--max_stories N` keeps the first N
+  non-empty stories. Both apply to train only.
+- **Vocab fill:** if fewer than V-2 distinct tokens occur in train,
+  zero-count tokens fill the rest by the same (count desc, GPT id asc) order.
+  `vocab_size` is an option (default 10,000) so tests can use a tiny V.
+- **Hashes:** `meta.txt` hashes are 64-bit FNV-1a. The vocab hash covers the
+  GPT ids in new-id order (u32 LE, `<unk>` = 0xFFFFFFFF). The output hashes
+  cover the whole `.bin` files.
+- **Impact:** the loader (P1.4) reads `num_tokens` at offset 16. CUDA/MPI
+  builds read the same files unchanged.
