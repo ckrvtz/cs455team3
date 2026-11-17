@@ -86,3 +86,28 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   golden files exist (P2.6).
 - **Not yet assigned:** the `zero` step in §9 has no log.csv column. P4.2
   must decide which phase it is charged to (suggest `bwd`).
+
+## 2026-11-17: Parameter and activation layouts (P0.4)
+
+- **Change:** `layout.h` defines the flat buffers.
+  - **Parameter tensors:** one tensor per layer per weight, named
+    `wte, wpe, h<l>.{ln1_g, ln1_b, qkv_w, qkv_b, proj_w, proj_b, ln2_g, ln2_b,
+    fc_w, fc_b, fcproj_w, fcproj_b}, lnf_g, lnf_b[, head_w]`, in that order.
+  - **Padding:** each offset is rounded up to **16 elements**, not 16 floats'
+    worth of bytes. In the double build that is 128 B, still 64-byte aligned.
+    The padded length is then the same in every build.
+  - **Weight decay:** applies to `wte` and every 2-D weight matrix except
+    `wpe`. The untied `head_w` also decays (§2.3 lists the tied set; an untied
+    head is the same kind of matrix).
+  - **Activation arena:** holds the forward and saved-for-backward tensors
+    from §6.2. The per-layer list and its names are in `layout.h`.
+- **Reason:** ROADMAP §4.3, §6.2, P0.4. Per-layer named tensors map
+  one-to-one to PyTorch parameter names for the golden files (P2.6/P3.7).
+- **Measured** (`make test`): `base` B=32 T=256 arena = 386,293,760 elements
+  ≈ 1473.6 MB float; `small` ≈ 841.3 MB; `smoke` ≈ 10.1 MB. This matches the
+  §13 estimate of about 1.5–2 GB once backward scratch is added.
+- **Impact:** layout is a contract. P3.5 appends backward scratch tensors
+  (activation gradients, attention scratch) to `make_act_layout`; appending
+  entries keeps existing offsets and this API. Checkpoints (P4.3) store
+  `params/m/v` in this order, so reordering tensors would break checkpoint
+  compatibility in all four builds.
