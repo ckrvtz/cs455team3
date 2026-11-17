@@ -1,0 +1,165 @@
+# Decision log (append-only)
+
+Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
+
+## 2026-11-17: Build system layout (P0.1)
+
+- **Change:** `Makefile` maps `BACKEND`/`COMM`/`REAL` to `-DTSLM_BACKEND_*`,
+  `-DTSLM_COMM_*`, `-DTSLM_REAL_*` (plus `MODE=release|debug`). New header
+  `include/tslm/build_config.h` (not in the ROADMAP §5 list) validates them
+  and `#error`s on unsupported combinations. Make itself rejects unknown
+  values. Each configuration builds into `build/<mode>-<backend>-<comm>-<real>/`;
+  release float apps go to `bin/`, other mode/precision builds to
+  `bin/<mode>-<real>/`. `apps/train.cpp` becomes `train_{serial,cuda,mpi,mpi_cuda}`.
+  Library sources named `*_cpu.cpp`, `*_cuda.cpp`, `*_serial.cpp`, `*_mpi.cpp`
+  are compiled only when that backend/comm is selected.
+- **Reason:** compile-time selection with build-time failures (ROADMAP §4.1).
+  Separate build directories keep `REAL=double` and debug objects from
+  mixing with release objects.
+- **Impact:** Phase B/C/D each remove their `#error` guard in
+  `build_config.h` and add their toolchain to the Makefile (nvcc for `.cu`,
+  mpicxx for `COMM=mpi`). Phase A currently compiles every configuration with
+  `$(CXX)`, so the `#error` messages show up even where nvcc/mpicxx are not installed.
+- Also: `.gitignore` (GitHub C++ template) ignored `Makefile`. That line was
+  removed, and `data/ runs/ bin/ build/ dist/` were added.
+
+## 2026-11-17: Config format and error handling (P0.2)
+
+- **Change:** `CHECK(cond, fmt, ...)` lives in `include/tslm/check.h` (the §5
+  header list includes it) and is re-exported by `common.h`. `CUDA_CHECK` and
+  `MPI_CHECK` are compile-time `static_assert` failures in builds without
+  that backend until Phases B and C implement them. Config keys (one table in
+  `src/common/config.cpp`): model `vocab_size max_seq_len n_layer n_embd
+  n_head tie_embeddings`; train `run_name out_dir train_data val_data seed
+  batch_size seq_len max_steps warmup_steps lr min_lr_frac weight_decay beta1
+  beta2 adam_eps grad_clip log_every eval_every val_batches ckpt_every`.
+  Precedence: defaults < `--config <file>` < `--key value`. Unknown and
+  duplicate keys, and malformed or non-finite values, are errors. Full-line
+  `#` comments are allowed; inline comments are not (paths may contain `#`).
+- **Reason:** ROADMAP P0.2 / CLAUDE.md §9. The serialized form uses `%.17g`, so
+  configs round-trip bit-exactly. P4.2 should write any extra `manifest.txt`
+  metadata (git hash, compiler, CPU) as `#` comment lines, so that a manifest
+  stays loadable with `--config`.
+- **Placeholders (to tune, not spec):** `max_steps`, `eval_every`,
+  `ckpt_every`, `val_batches` in all presets, and `smoke`'s `lr=1e-3` and
+  `warmup_steps=20` (the 200-step default would cover its whole run).
+- **Impact:** none on CUDA/MPI beyond removing the `CUDA_CHECK`/`MPI_CHECK`
+  stubs in their phases. `ModelConfig` is all plain `int`, so it can be
+  shared with nvcc code and the checkpoint header.
+
+## 2026-11-17: `make dist` excludes PDFs
+
+- **Change:** `make dist` excludes every `*.pdf`, such as the reference paper
+  and the proposal, and its tarball check rejects any PDF that slips through.
+- **Reason:** team decision. The reference documents are not part of the submission.
+- **Impact:** none on any build.
+
+## 2026-11-17: RNG seeding, runtime shims, test harness (P0.3)
+
+- **Change:**
+  - **RNG seeding:** `Rng(seed, stream)` sets
+    `key = mix64(seed) ^ mix64(stream*0x9E3779B97F4A7C15 + 0xD1B54A32D192ED03)`,
+    then fills the four xoshiro256** state words with four `splitmix64` steps
+    from `key`.
+  - **`normal()`:** Box–Muller with `u1 = 1 - uniform()` in (0,1], keeping
+    the cosine branch only and caching nothing, so the RNG state is exactly
+    the 4 words.
+  - **`uniform_int`:** rejection sampling, so there is no modulo bias.
+  - **Contract signatures:** `comm_init(int* argc, char*** argv)` takes
+    pointers, as `MPI_Init` does. `backend.h` copies and memsets are untyped
+    byte counts (like `cudaMemcpy`). `dev_malloc` returns 64-byte-aligned
+    memory and aborts on failure.
+  - **`PhaseTimer`:** phases `data, fwd, bwd, comm, opt` (the log.csv
+    columns). Only one phase can be open at a time, and `begin`/`end` call
+    `dev_sync()`.
+  - **Test harness:** `tests/test.h` provides
+    `TEST/TEST_MAIN/EXPECT_*/ASSERT_*` and a fork-based `dies_with_abort`
+    (POSIX). The P0.1/P0.2 tests were moved onto it.
+- **Reason:** ROADMAP §4.2, §4.6, P0.3. The known-answer values in
+  `tests/test_rng.cpp` were recorded once. They were cross-checked against an
+  independent from-the-definition implementation and the published
+  splitmix64/xoshiro256** reference outputs.
+- **Impact:** CUDA (Phase B) implements the same `backend.h` signatures with
+  device calls; `dev_sync()` becomes `cudaDeviceSynchronize`. MPI (Phase C)
+  implements `comm.h` in `comm_mpi.cpp`. Changing the seeding formula would
+  change every initialization and data order, so treat it as frozen once
+  golden files exist (P2.6).
+- **Not yet assigned:** the `zero` step in §9 has no log.csv column. P4.2
+  must decide which phase it is charged to (suggest `bwd`).
+
+## 2026-11-17: Parameter and activation layouts (P0.4)
+
+- **Change:** `layout.h` defines the flat buffers.
+  - **Parameter tensors:** one tensor per layer per weight, named
+    `wte, wpe, h<l>.{ln1_g, ln1_b, qkv_w, qkv_b, proj_w, proj_b, ln2_g, ln2_b,
+    fc_w, fc_b, fcproj_w, fcproj_b}, lnf_g, lnf_b[, head_w]`, in that order.
+  - **Padding:** each offset is rounded up to **16 elements**, not 16 floats'
+    worth of bytes. In the double build that is 128 B, still 64-byte aligned.
+    The padded length is then the same in every build.
+  - **Weight decay:** applies to `wte` and every 2-D weight matrix except
+    `wpe`. The untied `head_w` also decays (§2.3 lists the tied set; an untied
+    head is the same kind of matrix).
+  - **Activation arena:** holds the forward and saved-for-backward tensors
+    from §6.2. The per-layer list and its names are in `layout.h`.
+- **Reason:** ROADMAP §4.3, §6.2, P0.4. Per-layer named tensors map
+  one-to-one to PyTorch parameter names for the golden files (P2.6/P3.7).
+- **Measured** (`make test`): `base` B=32 T=256 arena = 386,293,760 elements
+  ≈ 1473.6 MB float; `small` ≈ 841.3 MB; `smoke` ≈ 10.1 MB. This matches the
+  §13 estimate of about 1.5–2 GB once backward scratch is added.
+- **Impact:** layout is a contract. P3.5 appends backward scratch tensors
+  (activation gradients, attention scratch) to `make_act_layout`; appending
+  entries keeps existing offsets and this API. Checkpoints (P4.3) store
+  `params/m/v` in this order, so reordering tensors would break checkpoint
+  compatibility in all four builds.
+
+## 2026-11-17: Pinned data sources (P1.1)
+
+- **Change:** `scripts/download_data.sh` fetches the original TinyStories
+  train/valid text (`roneneldan/TinyStories` @ `f54c09fd…`) and the GPT-Neo
+  `vocab.json`/`merges.txt` (`EleutherAI/gpt-neo-125m` @ `21def018…`). Both
+  are pinned by commit, and each file is checked against a SHA-256. Files go
+  into `$DATA_DIR` (default `data/`). Existing files are kept if their
+  checksum matches; a wrong checksum is an error. Interrupted downloads
+  resume from `<file>.part`.
+- **Reason:** ROADMAP §7.1, D3/D4. Pinning means every team member and all
+  four builds tokenize the same bytes, so `prepare_data` output, coverage and
+  validation loss are comparable.
+- **Checksums:** dataset SHA-256s are the LFS hashes Hugging Face publishes.
+  The tokenizer files are not in LFS. Their SHA-256s were computed after
+  confirming `git hash-object` equals the blob ids listed at the pinned revision.
+- **Impact:** none on the code. Cluster users can set `DATA_DIR` to scratch
+  storage.
+
+## 2026-11-17: Tokenizer implementation and golden fixtures (P1.2)
+
+- **Change:**
+  - **Character classes:** following §7.2, non-ASCII counts as a letter
+    unless it is in an explicit table of Unicode whitespace, number and
+    non-letter ranges (punctuation, symbols, emoji, marks, format
+    characters), in `src/data/tokenizer.cpp`.
+  - **Invalid UTF-8:** each invalid byte is one "other" character, so
+    encoding stays lossless.
+  - **Special tokens:** not recognized by `encode()`; `prepare_data`
+    inserts EOS id 50256 itself.
+  - **Golden file:** `tests/golden/tokenizer_cases.txt` has 304 cases (hand
+    edge cases plus a seeded TinyStories sample) with expected ids **and**
+    HF pre-token byte lengths.
+  - **Subset fixture:** `make test` uses a committed subset
+    `vocab`/`merges` fixture (`tokenizer_{vocab,merges}_subset.*`, about
+    62 KB) so it needs no download. It also reruns the cases on the full
+    files when `data/` has them.
+- **Reason:** CLAUDE.md §6 forbids tests that need downloads, and the full
+  vocab and merges files (1.35 MB) exceed the golden-file size target. The
+  subset (only the merges applied to the golden cases, in original order) is
+  exact for those inputs. The generator verifies this by re-tracing BPE
+  against HF.
+- **Why pre-token lengths are checked:** GPT-2 merges never cross pre-token
+  boundaries, so many character-class errors leave ids unchanged.
+  Deliberately breaking five table entries left every id check passing, but
+  the pre-token check caught all five.
+- **Offline validation** (scratchpad, not committed): C++ ids identical to HF
+  on the whole validation file (21,990 stories, 4,702,514 tokens) and on
+  every train story containing non-ASCII (130,115 stories, 27,164,705
+  tokens). Pre-token splits were also identical on the latter.
+- **Impact:** none on CUDA/MPI (host-only). `dev_only/requirements.txt` pins
+  `tokenizers==0.21.1` for regenerating golden files.

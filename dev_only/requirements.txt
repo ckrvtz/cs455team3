@@ -1,0 +1,2 @@
+# dev_only tooling (offline golden-file generation). Not part of the build or tests.
+tokenizers==0.21.1
