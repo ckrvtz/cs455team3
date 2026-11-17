@@ -129,3 +129,37 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   confirming `git hash-object` equals the blob ids listed at the pinned revision.
 - **Impact:** none on the code. Cluster users can set `DATA_DIR` to scratch
   storage.
+
+## 2026-11-17: Tokenizer implementation and golden fixtures (P1.2)
+
+- **Change:**
+  - **Character classes:** following §7.2, non-ASCII counts as a letter
+    unless it is in an explicit table of Unicode whitespace, number and
+    non-letter ranges (punctuation, symbols, emoji, marks, format
+    characters), in `src/data/tokenizer.cpp`.
+  - **Invalid UTF-8:** each invalid byte is one "other" character, so
+    encoding stays lossless.
+  - **Special tokens:** not recognized by `encode()`; `prepare_data`
+    inserts EOS id 50256 itself.
+  - **Golden file:** `tests/golden/tokenizer_cases.txt` has 304 cases (hand
+    edge cases plus a seeded TinyStories sample) with expected ids **and**
+    HF pre-token byte lengths.
+  - **Subset fixture:** `make test` uses a committed subset
+    `vocab`/`merges` fixture (`tokenizer_{vocab,merges}_subset.*`, about
+    62 KB) so it needs no download. It also reruns the cases on the full
+    files when `data/` has them.
+- **Reason:** CLAUDE.md §6 forbids tests that need downloads, and the full
+  vocab and merges files (1.35 MB) exceed the golden-file size target. The
+  subset (only the merges applied to the golden cases, in original order) is
+  exact for those inputs. The generator verifies this by re-tracing BPE
+  against HF.
+- **Why pre-token lengths are checked:** GPT-2 merges never cross pre-token
+  boundaries, so many character-class errors leave ids unchanged.
+  Deliberately breaking five table entries left every id check passing, but
+  the pre-token check caught all five.
+- **Offline validation** (scratchpad, not committed): C++ ids identical to HF
+  on the whole validation file (21,990 stories, 4,702,514 tokens) and on
+  every train story containing non-ASCII (130,115 stories, 27,164,705
+  tokens). Pre-token splits were also identical on the latter.
+- **Impact:** none on CUDA/MPI (host-only). `dev_only/requirements.txt` pins
+  `tokenizers==0.21.1` for regenerating golden files.
