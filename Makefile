@@ -136,10 +136,12 @@ $(BUILD_DIR)/tests/%: $(BUILD_DIR)/tests/%.o $(LIB)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) $^ $(LDLIBS) -o $@
 
 # ---- submission tarball (ROADMAP §5): excludes dev_only/, data/, runs/ and
-# build products; refuses to package if Python artifacts remain in the tree.
+# build products, plus every *.pdf (the reference papers/proposal are not part
+# of the submission); refuses to package if Python artifacts remain in the tree.
 DIST_DIR     := dist
 DIST_NAME    := tslm
 DIST_EXCLUDE := ./.git ./dev_only ./data ./runs ./build ./bin ./$(DIST_DIR)
+DIST_EXCLUDE_PATTERNS := '*.pdf'
 
 dist:
 	@bad=$$(find . \( $(foreach d,$(DIST_EXCLUDE),-path $(d) -o) -false \) -prune -o \
@@ -147,8 +149,8 @@ dist:
 	if [ -n "$$bad" ]; then echo "make dist: Python files outside dev_only/:"; echo "$$bad"; exit 1; fi
 	@mkdir -p $(DIST_DIR)
 	tar -czf $(DIST_DIR)/$(DIST_NAME).tar.gz $(foreach d,$(DIST_EXCLUDE),--exclude=$(d)) \
-	    --transform 's,^\.,$(DIST_NAME),' .
-	@if tar -tzf $(DIST_DIR)/$(DIST_NAME).tar.gz | grep -E '(\.py|\.ipynb|/requirements[^/]*\.txt)$$|/dev_only/'; then \
+	    $(foreach p,$(DIST_EXCLUDE_PATTERNS),--exclude=$(p)) --transform 's,^\.,$(DIST_NAME),' .
+	@if tar -tzf $(DIST_DIR)/$(DIST_NAME).tar.gz | grep -E '(\.py|\.ipynb|\.pdf|/requirements[^/]*\.txt)$$|/dev_only/'; then \
 	  echo "make dist: forbidden files in tarball"; rm -f $(DIST_DIR)/$(DIST_NAME).tar.gz; exit 1; fi
 	@echo "wrote $(DIST_DIR)/$(DIST_NAME).tar.gz"
 

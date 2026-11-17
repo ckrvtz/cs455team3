@@ -46,3 +46,10 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **Impact:** none on CUDA/MPI beyond removing the `CUDA_CHECK`/`MPI_CHECK`
   stubs in their phases. `ModelConfig` is all plain `int`, so it can be
   shared with nvcc code and the checkpoint header.
+
+## 2026-11-17: `make dist` excludes PDFs
+
+- **Change:** `make dist` excludes every `*.pdf`, such as the reference paper
+  and the proposal, and its tarball check rejects any PDF that slips through.
+- **Reason:** team decision. The reference documents are not part of the submission.
+- **Impact:** none on any build.
