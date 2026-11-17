@@ -111,3 +111,21 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   entries keeps existing offsets and this API. Checkpoints (P4.3) store
   `params/m/v` in this order, so reordering tensors would break checkpoint
   compatibility in all four builds.
+
+## 2026-11-17: Pinned data sources (P1.1)
+
+- **Change:** `scripts/download_data.sh` fetches the original TinyStories
+  train/valid text (`roneneldan/TinyStories` @ `f54c09fd…`) and the GPT-Neo
+  `vocab.json`/`merges.txt` (`EleutherAI/gpt-neo-125m` @ `21def018…`). Both
+  are pinned by commit, and each file is checked against a SHA-256. Files go
+  into `$DATA_DIR` (default `data/`). Existing files are kept if their
+  checksum matches; a wrong checksum is an error. Interrupted downloads
+  resume from `<file>.part`.
+- **Reason:** ROADMAP §7.1, D3/D4. Pinning means every team member and all
+  four builds tokenize the same bytes, so `prepare_data` output, coverage and
+  validation loss are comparable.
+- **Checksums:** dataset SHA-256s are the LFS hashes Hugging Face publishes.
+  The tokenizer files are not in LFS. Their SHA-256s were computed after
+  confirming `git hash-object` equals the blob ids listed at the pinned revision.
+- **Impact:** none on the code. Cluster users can set `DATA_DIR` to scratch
+  storage.
