@@ -22,3 +22,27 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   `$(CXX)`, so the `#error` messages show up even where nvcc/mpicxx are not installed.
 - Also: `.gitignore` (GitHub C++ template) ignored `Makefile`. That line was
   removed, and `data/ runs/ bin/ build/ dist/` were added.
+
+## 2026-11-17: Config format and error handling (P0.2)
+
+- **Change:** `CHECK(cond, fmt, ...)` lives in `include/tslm/check.h` (the §5
+  header list includes it) and is re-exported by `common.h`. `CUDA_CHECK` and
+  `MPI_CHECK` are compile-time `static_assert` failures in builds without
+  that backend until Phases B and C implement them. Config keys (one table in
+  `src/common/config.cpp`): model `vocab_size max_seq_len n_layer n_embd
+  n_head tie_embeddings`; train `run_name out_dir train_data val_data seed
+  batch_size seq_len max_steps warmup_steps lr min_lr_frac weight_decay beta1
+  beta2 adam_eps grad_clip log_every eval_every val_batches ckpt_every`.
+  Precedence: defaults < `--config <file>` < `--key value`. Unknown and
+  duplicate keys, and malformed or non-finite values, are errors. Full-line
+  `#` comments are allowed; inline comments are not (paths may contain `#`).
+- **Reason:** ROADMAP P0.2 / CLAUDE.md §9. The serialized form uses `%.17g`, so
+  configs round-trip bit-exactly. P4.2 should write any extra `manifest.txt`
+  metadata (git hash, compiler, CPU) as `#` comment lines, so that a manifest
+  stays loadable with `--config`.
+- **Placeholders (to tune, not spec):** `max_steps`, `eval_every`,
+  `ckpt_every`, `val_batches` in all presets, and `smoke`'s `lr=1e-3` and
+  `warmup_steps=20` (the 200-step default would cover its whole run).
+- **Impact:** none on CUDA/MPI beyond removing the `CUDA_CHECK`/`MPI_CHECK`
+  stubs in their phases. `ModelConfig` is all plain `int`, so it can be
+  shared with nvcc code and the checkpoint header.

@@ -101,7 +101,8 @@ all: $(LIB) $(APP_BINS)
 
 # Tests run from the repo root (golden files are referenced as tests/golden/...).
 test: $(TEST_BINS)
-	@pass=0; fail=0; failed=""; \
+	@mkdir -p $(BUILD_DIR)/tests/tmp; export TSLM_TEST_TMPDIR=$(BUILD_DIR)/tests/tmp; \
+	pass=0; fail=0; failed=""; \
 	for t in $(TEST_BINS); do \
 	  echo "== $$t"; \
 	  if ./$$t; then pass=$$((pass+1)); else fail=$$((fail+1)); failed="$$failed $$t"; fi; \
