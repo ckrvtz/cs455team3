@@ -53,3 +53,36 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   and the proposal, and its tarball check rejects any PDF that slips through.
 - **Reason:** team decision. The reference documents are not part of the submission.
 - **Impact:** none on any build.
+
+## 2026-11-17: RNG seeding, runtime shims, test harness (P0.3)
+
+- **Change:**
+  - **RNG seeding:** `Rng(seed, stream)` sets
+    `key = mix64(seed) ^ mix64(stream*0x9E3779B97F4A7C15 + 0xD1B54A32D192ED03)`,
+    then fills the four xoshiro256** state words with four `splitmix64` steps
+    from `key`.
+  - **`normal()`:** Box–Muller with `u1 = 1 - uniform()` in (0,1], keeping
+    the cosine branch only and caching nothing, so the RNG state is exactly
+    the 4 words.
+  - **`uniform_int`:** rejection sampling, so there is no modulo bias.
+  - **Contract signatures:** `comm_init(int* argc, char*** argv)` takes
+    pointers, as `MPI_Init` does. `backend.h` copies and memsets are untyped
+    byte counts (like `cudaMemcpy`). `dev_malloc` returns 64-byte-aligned
+    memory and aborts on failure.
+  - **`PhaseTimer`:** phases `data, fwd, bwd, comm, opt` (the log.csv
+    columns). Only one phase can be open at a time, and `begin`/`end` call
+    `dev_sync()`.
+  - **Test harness:** `tests/test.h` provides
+    `TEST/TEST_MAIN/EXPECT_*/ASSERT_*` and a fork-based `dies_with_abort`
+    (POSIX). The P0.1/P0.2 tests were moved onto it.
+- **Reason:** ROADMAP §4.2, §4.6, P0.3. The known-answer values in
+  `tests/test_rng.cpp` were recorded once. They were cross-checked against an
+  independent from-the-definition implementation and the published
+  splitmix64/xoshiro256** reference outputs.
+- **Impact:** CUDA (Phase B) implements the same `backend.h` signatures with
+  device calls; `dev_sync()` becomes `cudaDeviceSynchronize`. MPI (Phase C)
+  implements `comm.h` in `comm_mpi.cpp`. Changing the seeding formula would
+  change every initialization and data order, so treat it as frozen once
+  golden files exist (P2.6).
+- **Not yet assigned:** the `zero` step in §9 has no log.csv column. P4.2
+  must decide which phase it is charged to (suggest `bwd`).
