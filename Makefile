@@ -58,6 +58,17 @@ LDLIBS   :=
 # ---- output locations
 CFG_TAG   := $(MODE)-$(BACKEND)-$(COMM)-$(REAL)
 BUILD_DIR := build/$(CFG_TAG)
+
+# Code-generation target stamp: with -march=native the objects are specific
+# to the CPU that compiled them, and make cannot see a CPU change by itself
+# (this container moved between CPUs once; docs/DECISIONS.md). The stamp
+# holds a checksum of the compiler's predefined macros under the actual flags
+# (instruction-set and tuning macros such as __AVX512F__ and __tune_<cpu>__
+# appear there). EVERY object depends on it (the %.o rule below), so a
+# different CPU, compiler or flag set rebuilds everything. Defined here, before
+# that rule, because make expands rule prerequisites when it reads them.
+TARGET_ID    := $(shell $(CXX) $(CXXFLAGS) -dM -E -x c++ - </dev/null 2>/dev/null | cksum | cut -d' ' -f1)
+TARGET_STAMP := $(BUILD_DIR)/target.stamp
 # The default release float build puts apps in bin/ (as ROADMAP §4.1 names
 # them); every other mode/precision gets its own bin/<mode>-<real>/.
 ifeq ($(MODE)-$(REAL),release-float)
@@ -114,7 +125,7 @@ debug:
 	$(MAKE) MODE=debug all test
 
 # ---- build rules
-$(BUILD_DIR)/%.o: %.cpp
+$(BUILD_DIR)/%.o: %.cpp $(TARGET_STAMP)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -127,9 +138,11 @@ GIT_HASH    := $(shell h=$$(git rev-parse --short=12 HEAD 2>/dev/null) || h=unkn
                  if [ "$$h" != unknown ] && ! git diff --quiet HEAD -- 2>/dev/null; then h=$$h-dirty; fi; echo $$h)
 BUILD_INFO  := $(GIT_HASH) | $(CXX) $(CXXFLAGS)
 BUILD_STAMP := $(BUILD_DIR)/build_info.txt
+
 # Skipped when the only goals are clean/dist (no build happens then).
 ifneq ($(if $(MAKECMDGOALS),$(filter-out clean dist,$(MAKECMDGOALS)),all),)
 $(shell mkdir -p $(BUILD_DIR); [ "$$(cat $(BUILD_STAMP) 2>/dev/null)" = '$(BUILD_INFO)' ] || printf '%s' '$(BUILD_INFO)' > $(BUILD_STAMP))
+$(shell [ "$$(cat $(TARGET_STAMP) 2>/dev/null)" = '$(TARGET_ID)' ] || printf '%s' '$(TARGET_ID)' > $(TARGET_STAMP))
 endif
 MANIFEST_OBJ := $(BUILD_DIR)/src/train/manifest.o
 $(MANIFEST_OBJ): $(BUILD_STAMP)

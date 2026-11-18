@@ -50,7 +50,7 @@ gitignored; Phase 6 generation starts from it).
 
 ### Expected cost (estimate)
 
-Measured on this project's cloud container (Intel Xeon @ 2.10GHz, release
+Measured on this project's cloud container (Intel Xeon @ 2.30GHz with AVX-512, release
 float build, warm page cache, pilot below): 3.8 s/step, and about 1.5 s per
 validation batch. The estimate is therefore 2,400 × 3.8 s ≈ 2.5 h of steps
 plus 24 evaluations × 20 batches × 1.5 s ≈ 12 min, about **2.7 h**. Other

@@ -1126,3 +1126,48 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   was "Xeon @ 2.10GHz" until about 05:30 UTC and "Xeon @ 2.30GHz with
   AVX-512" from about 12:00 UTC. These benchmarks are on the 2.30GHz host
   only, from a build compiled there.
+
+## 2026-11-18: Update to the stale-build correction: likely cause was a CPU change; Makefile target stamp
+
+- **Revised cause** of the release-float discrepancy in "Correction:
+  release-float numbers recorded from a stale build":
+  - The cause recorded there (an object left over from a mutation check) is
+    probably wrong.
+  - The container moved between hosts during the session: "Intel Xeon @
+    2.10GHz" in every manifest up to 05:30 UTC, then "Intel Xeon @ 2.30GHz"
+    with AVX-512 (`-march=native` defines `__AVX512F__`,
+    `__tune_graniterapids__`) from about 12:00 UTC.
+  - The release objects had been compiled on the first host, and `make` kept
+    reusing them on the second, because nothing in the build depended on the
+    CPU.
+  - P5.1's first test binary (checksum `3a787b8b4853b93d`) ran with those
+    objects. The checksum became `0d80323551e3bb51` exactly when a mutation
+    check forced `attention_cpu.o` to recompile on the new host.
+  - The P4.5 values (5.7444; 6.0728 / 5.7001) were produced with
+    first-host objects as well.
+  - This fits the timeline better than a mutation leftover. Neither cause
+    can now be proven, because the first host is gone.
+  - The corrected numbers in that entry stand: they come from clean builds
+    on the current host.
+- **What it means:** with `-march=native`, results are bit-reproducible per
+  binary, and per (compiler, flags, CPU) build. They are not guaranteed
+  across CPUs. Recorded numbers must name the machine; bench rows and
+  manifests already do.
+- **Makefile change:** a code-generation target stamp.
+  - `TARGET_ID` is a checksum of `$(CXX) $(CXXFLAGS) -dM -E` (the
+    compiler's predefined macros under the actual flags, which include the
+    ISA and tuning macros that `-march=native` selects). It is kept in
+    `build/<tag>/target.stamp` and rewritten only when it changes.
+  - Every object depends on the stamp, so a different CPU, compiler or flag
+    set rebuilds everything.
+  - Verified: an unchanged host gives a no-op rebuild; overwriting the stamp
+    (a simulated CPU change) recompiled all 39 library and app objects; a
+    second run was again a no-op.
+  - This needs only the compiler, no `/proc/cpuinfo`, so it works on Linux
+    and macOS hosts alike.
+- **`docs/RUNS.md`:** the P5.2 pilot's 3.8 s/step was measured on the
+  2.30GHz AVX-512 host (it ran at 12:16 UTC), not the 2.10GHz one. The
+  machine description there was corrected.
+- **Procedure:** the two rules from the correction entry still hold (touch
+  after restoring a mutated file; clean rebuild before recording numbers).
+  The stamp is an additional safeguard, not a replacement.
