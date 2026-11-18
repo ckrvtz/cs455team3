@@ -40,7 +40,7 @@ TEST(real_t) {
 TEST(presets) {
     struct Want { const char* path; int L, C, NH, T, B; double lr; };
     const Want wants[] = {
-        {"configs/smoke.cfg", 1, 32, 2, 32, 4, 1e-3},
+        {"configs/smoke.cfg", 1, 32, 2, 32, 4, 1e-2},  // tuned in P4.5
         {"configs/small.cfg", 2, 128, 4, 256, 32, 1e-3},
         {"configs/base.cfg", 4, 256, 8, 256, 32, 6e-4},
     };

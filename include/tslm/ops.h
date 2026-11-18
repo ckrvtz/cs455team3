@@ -11,7 +11,8 @@
 //   - output buffers must not overlap input buffers;
 //   - layouts are row-major (§6.2). Sizes that can exceed 2^31 are size_t.
 //
-// This file grows task by task. Declared so far: P2.1-P2.4 forward ops, P3.1 backward ops.
+// This file grows task by task. Declared so far: P2.1-P2.4 forward ops, P3.1-P3.4 backward ops,
+// P4.1 optimizer ops.
 #pragma once
 
 #include <cstddef>
@@ -60,6 +61,10 @@ void residual_backward(real_t* da, real_t* db, const real_t* dout, size_t n);
 //   out[n,o] = sum_c inp[n,c] * W[o,c] + (bias ? bias[o] : 0)
 void matmul_forward(real_t* out, const real_t* inp, const real_t* W, const real_t* bias, int N, int C,
                     int OC);
+// dinp += dout*W ; dW += dout^T*inp ; dbias += colsum(dout)  (dbias nullable)
+//   dinp[n,c] += sum_o dout[n,o] * W[o,c];  dW[o,c] += sum_n dout[n,o] * inp[n,c];  dbias[o] += sum_n dout[n,o]
+void matmul_backward(real_t* dinp, real_t* dW, real_t* dbias, const real_t* dout, const real_t* inp,
+                     const real_t* W, int N, int C, int OC);
 
 // Causal multi-head attention on fused qkv[B,T,3C] -> out[B,T,C]; att[B,NH,T,T] saved.
 //   hs = C / NH; for token (b,t): Q = qkv[b,t,0:C], K = qkv[b,t,C:2C], V = qkv[b,t,2C:3C],
@@ -67,6 +72,13 @@ void matmul_forward(real_t* out, const real_t* inp, const real_t* W, const real_
 //   att[b,h,t,t2] = softmax_{t2<=t}( Q_h(t) . K_h(t2) / sqrt(hs) ), and exactly 0 for t2 > t
 //   out[b,t,h*hs+i] = sum_{t2<=t} att[b,h,t,t2] * V_h(t2)[i]
 void attention_forward(real_t* out, real_t* att, const real_t* qkv, int B, int T, int C, int NH);
+// Backward through attention_forward, ACCUMULATING into dqkv [B,T,3C] (same layout as qkv).
+// att is the forward's saved post-softmax att. scratch: B*NH*T*T reals of workspace,
+// contents undefined on return (serial keeps datt/dpre there; CUDA batched-GEMM uses it too).
+//   datt = dY V^T;  dV += att^T dY;  dpre = att * (datt - rowsum(att * datt))
+//   dQ += dpre K / sqrt(hs);  dK += dpre^T Q / sqrt(hs)   (causal entries only)
+void attention_backward(real_t* dqkv, real_t* scratch, const real_t* dout, const real_t* qkv, const real_t* att, int B,
+                        int T, int C, int NH);
 
 // Softmax + cross entropy over N rows of V logits.
 //   probs[n,v] = exp(logits[n,v] - m_n) / sum_v' exp(logits[n,v'] - m_n),  m_n = max_v logits[n,v]
@@ -74,9 +86,25 @@ void attention_forward(real_t* out, real_t* att, const real_t* qkv, int B, int T
 // Per-position losses only; the host reduces them with sum_reduce.
 void softmax_xent_forward(real_t* probs, real_t* losses, const real_t* logits, const int32_t* targets, int N,
                           int V);
+// Gradient of the MEAN loss (1/N) sum_n losses[n] w.r.t. logits, ACCUMULATED:
+//   dlogits[n,v] += (probs[n,v] - 1[v == targets[n]]) / N
+void softmax_xent_backward(real_t* dlogits, const real_t* probs, const int32_t* targets, int N, int V);
 
 // Sum of n values accumulated in double, returned to the host (used for the mean loss).
 double sum_reduce(const real_t* x, size_t n);
+
+// Optimizer / clipping (P4.1).
+// Sum of squares of n values accumulated in double, returned to the host
+// (global gradient norm = sqrt of this over the flat grads buffer).
+double sumsq_reduce(const real_t* x, size_t n);
+// x[i] *= s for i < n (in place).
+void scale_inplace(real_t* x, real_t s, size_t n);
+// Decoupled AdamW update of one tensor, in place on p, m, v (step is 1-based):
+//   m = b1 m + (1-b1) g;   v = b2 v + (1-b2) g^2
+//   p -= lr * ( (m / (1-b1^step)) / (sqrt(v / (1-b2^step)) + eps) + weight_decay * p )
+// weight_decay = 0 for tensors that are not decayed (the caller applies the mask).
+void adamw_step(real_t* p, const real_t* g, real_t* m, real_t* v, size_t n, real_t lr, real_t beta1, real_t beta2,
+                real_t eps, real_t weight_decay, int step);
 
 }  // namespace ops
 }  // namespace tslm

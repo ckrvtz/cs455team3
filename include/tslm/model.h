@@ -49,9 +49,14 @@ struct Model {
     real_t* v = nullptr;       // AdamW second moment
     real_t* acts = nullptr;    // activation arena [acts_layout.num_elems]
     int B_last = 0, T_last = 0;  // shape of the most recent forward
+    // Batch of the most recent forward, kept for model_backward. These are the
+    // caller's buffers: they must stay valid until backward has run.
+    const int32_t* tokens_last = nullptr;
+    const int32_t* targets_last = nullptr;
 
     // Pointer to tensor i of a layout within its buffer.
     real_t* param(int i) const { return params + params_layout[i].offset; }
+    real_t* grad(int i) const { return grads + params_layout[i].offset; }
     real_t* act(int i) const { return acts + acts_layout[i].offset; }
 };
 
@@ -67,6 +72,15 @@ void model_init_weights(Model* model, uint64_t seed);
 // host double, or NaN when targets == nullptr (then softmax/loss are
 // skipped and only logits are produced).
 double model_forward(Model* model, const int32_t* tokens, const int32_t* targets, int B, int T);
+
+// Backward pass for the most recent forward, which must have had targets.
+// ACCUMULATES into grads (the training loop zeroes grads once per step,
+// CLAUDE.md §4.6). Gradient of the mean loss returned by that forward.
+// Uses the saved activations and that forward's tokens/targets buffers;
+// zeroes and overwrites the backward activation buffers (layout.h). Params
+// are not modified. Tied model: wte's gradient receives both the output-head
+// and the embedding contributions.
+void model_backward(Model* model);
 
 // Logits of the most recent forward, [B_last*T_last, V] row-major, in the
 // activation arena (a device pointer in CUDA builds).

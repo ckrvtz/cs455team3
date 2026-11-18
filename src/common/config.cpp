@@ -59,6 +59,7 @@ std::vector<Field> fields(Config* c) {
         {"eval_every", Kind::Int, &t.eval_every},
         {"val_batches", Kind::Int, &t.val_batches},
         {"ckpt_every", Kind::Int, &t.ckpt_every},
+        {"resume", Kind::String, &t.resume},
     };
 }
 

@@ -54,6 +54,11 @@ public:
               std::string* err);
 
     void next_batch(int32_t* x, int32_t* y);
+    // Batch `index` in FILE order, no shuffling (validation, §9): global rows
+    // are chunks [index*gB, (index+1)*gB) and this rank takes rows
+    // [rank*B, (rank+1)*B) of them, as next_batch does. Does not touch the
+    // shuffle state. CHECKs (index + 1) * gB <= num_chunks.
+    void fixed_batch(uint64_t index, int32_t* x, int32_t* y) const;
 
     LoaderState state() const { return state_; }
     void set_state(const LoaderState& s);  // CHECKs step <= steps_per_epoch
@@ -63,10 +68,13 @@ public:
     uint64_t num_tokens() const { return num_tokens_; }
     uint64_t num_chunks() const { return num_chunks_; }
     uint32_t vocab_size() const { return vocab_size_; }
+    int batch_size() const { return B_; }
+    int seq_len() const { return T_; }
 
 private:
     void close();
     void ensure_permutation();
+    void copy_chunk(uint64_t chunk, int32_t* x_row, int32_t* y_row) const;
 
     void* map_ = nullptr;
     size_t map_bytes_ = 0;

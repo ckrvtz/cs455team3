@@ -209,7 +209,13 @@ TEST(act_layout_structure_and_sizes) {
         const size_t N = size_t(B) * T, C = size_t(m.n_embd), V = size_t(m.vocab_size);
         const size_t att = size_t(B) * m.n_head * T * T;
         const size_t per_layer = 18 * N * C + 4 * N + att;  // see layout.h list
-        const size_t want = N * C + m.n_layer * per_layer + N * C + 2 * N + 2 * N * V + N;
+        const size_t forward = N * C + m.n_layer * per_layer + N * C + 2 * N + 2 * N * V + N;
+        // Backward buffers (P3.5): d_logits N*V; d_x, d_ln, d_atty 3*N*C;
+        // d_qkv 3*N*C; d_fch_gelu, d_fch 8*N*C; att_scratch B*NH*T*T.
+        const size_t backward = N * V + 14 * N * C + att;
+        const size_t want = forward + backward;
+        // Forward tensors come first, so their offsets are unaffected.
+        EXPECT_TRUE(A[A.d_logits].offset >= A[A.losses].offset + A[A.losses].numel);
         size_t sum = 0;
         for (const TensorDesc& t : A.tensors) sum += t.numel;
         EXPECT_EQ(sum, want);

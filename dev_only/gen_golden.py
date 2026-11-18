@@ -1,4 +1,4 @@
-"""Generate forward golden files from a dump_init file (ROADMAP §10, P2.6).
+"""Generate forward and backward golden files from a dump_init file (ROADMAP §10, P2.6, P3.7).
 
 OFFLINE / DEV ONLY. Never run by make or any test. Its outputs are committed as
 plain data under tests/golden/ and read by tests/test_golden.cpp.
@@ -18,10 +18,16 @@ LayerNorm eps 1e-5 (biased variance), GELU tanh approximation, attention scale
 widened to float64.
 
 Output (tensor_file.h "TSGD" format): loss f64 [1], losses f64 [B*T],
-logits f64 [B, T, V]. P3.7 extends this script with gradients.
+logits f64 [B, T, V], and grad.<name> f64 [shape] for every parameter: the
+autograd gradient of the mean loss (P3.7).
+Optional third output (P4.1): a 5-step training trajectory on the same
+fixed batch (global-norm clip, then torch.optim.AdamW with decay/no-decay
+groups, warmup+cosine LR): hparams, step_loss, step_grad_norm (pre-clip),
+step_lr, and the final param.<name> values.
 """
 
 import array
+import math
 import struct
 import sys
 
@@ -70,10 +76,11 @@ def tensor(entry):
     return torch.tensor(vals, dtype=torch.float64).reshape(dims)
 
 
-def forward(d):
+def forward(d, P):
+    """P: parameter name -> float64 tensor (leaf tensors when gradients are wanted)."""
     V, maxT, L, C, NH, tied, B, T = d["config"][2]
     hs = C // NH
-    p = lambda name: tensor(d["param." + name])
+    p = lambda name: P[name]
     tokens = torch.tensor(d["tokens"][2], dtype=torch.long).reshape(B, T)
     targets = torch.tensor(d["targets"][2], dtype=torch.long).reshape(B, T)
 
@@ -101,21 +108,89 @@ def forward(d):
     return logits, losses
 
 
+# AdamW trajectory hyperparameters (P4.1). Stored in the output file so the
+# C++ test reproduces exactly this run.
+ADAMW = dict(lr=1e-3, min_lr_frac=0.1, warmup=2, max_steps=5, beta1=0.9, beta2=0.95, eps=1e-8,
+             weight_decay=0.1, clip=1.0, steps=5)
+
+
+def lr_at(step, h):
+    """ROADMAP 2.3 schedule, written from the formula: linear warmup, then cosine to min_lr_frac*lr."""
+    peak, floor_lr, W, S = h["lr"], h["min_lr_frac"] * h["lr"], h["warmup"], h["max_steps"]
+    if W > 0 and step <= W:
+        return peak * step / W
+    q = min(1.0, (step - W) / (S - W))
+    return floor_lr + 0.5 * (peak - floor_lr) * (1 + math.cos(math.pi * q))
+
+
+def adamw_trajectory(d, names, h):
+    """`steps` training steps on the fixed batch: grads -> global-norm clip -> AdamW.
+    Clip: scale by clip/norm only if norm > clip (no epsilon, unlike
+    torch.nn.utils.clip_grad_norm_). Weight decay only on 2-D weights except wpe."""
+    P = {n: tensor(d["param." + n]).requires_grad_(True) for n in names}
+    decay = [n for n in names if P[n].dim() == 2 and n != "wpe"]
+    no_decay = [n for n in names if n not in decay]
+    opt = torch.optim.AdamW(
+        [{"params": [P[n] for n in decay], "weight_decay": h["weight_decay"]},
+         {"params": [P[n] for n in no_decay], "weight_decay": 0.0}],
+        lr=h["lr"], betas=(h["beta1"], h["beta2"]), eps=h["eps"])
+    losses, norms, lrs = [], [], []
+    for step in range(1, h["steps"] + 1):
+        opt.zero_grad(set_to_none=False)
+        _, l = forward(d, P)
+        loss = l.mean()
+        loss.backward()
+        norm = math.sqrt(sum(float((P[n].grad ** 2).sum()) for n in names))
+        if norm > h["clip"]:
+            with torch.no_grad():
+                for n in names:
+                    P[n].grad.mul_(h["clip"] / norm)
+        lr = lr_at(step, h)
+        for g in opt.param_groups:
+            g["lr"] = lr
+        opt.step()
+        losses.append(loss.item()); norms.append(norm); lrs.append(lr)
+    return P, decay, losses, norms, lrs
+
+
 def main():
-    if len(sys.argv) != 3:
-        sys.exit("usage: gen_golden.py <init.bin> <out_fwd.bin>")
+    if len(sys.argv) not in (3, 4):
+        sys.exit("usage: gen_golden.py <init.bin> <out_fwd.bin> [<out_adamw.bin>]")
     torch.set_default_dtype(torch.float64)
     d = read_tsgd(sys.argv[1])
     V, maxT, L, C, NH, tied, B, T = d["config"][2]
-    with torch.no_grad():
-        logits, losses = forward(d)
+    # Every parameter as a float64 leaf tensor, in the dump (= layout) order.
+    names = [k[len("param."):] for k in d if k.startswith("param.")]
+    P = {n: tensor(d["param." + n]).requires_grad_(True) for n in names}
+    logits, losses = forward(d, P)
     loss = losses.mean()
-    write_tsgd(sys.argv[2], [
+    loss.backward()  # autograd: d(mean loss)/d(param); tied wte gets both paths
+    out = [
         ("loss", [1], [loss.item()]),
-        ("losses", [B * T], losses.tolist()),
-        ("logits", [B, T, V], logits.reshape(-1).tolist()),
-    ])
-    print("%s: loss %.12f (torch %s)" % (sys.argv[2], loss.item(), torch.__version__))
+        ("losses", [B * T], losses.detach().tolist()),
+        ("logits", [B, T, V], logits.detach().reshape(-1).tolist()),
+    ]
+    for n in names:
+        g = P[n].grad
+        out.append(("grad." + n, list(g.shape), g.reshape(-1).tolist()))
+    write_tsgd(sys.argv[2], out)
+    print("%s: loss %.12f, %d gradient tensors (torch %s)" % (sys.argv[2], loss.item(), len(names), torch.__version__))
+    if len(sys.argv) == 4:
+        h = ADAMW
+        Pt, decay, step_losses, norms, lrs = adamw_trajectory(d, names, h)
+        hp = [h["lr"], h["min_lr_frac"], h["warmup"], h["max_steps"], h["beta1"], h["beta2"], h["eps"],
+              h["weight_decay"], h["clip"], h["steps"]]
+        out2 = [
+            ("hparams", [len(hp)], hp),  # lr, min_lr_frac, warmup, max_steps, b1, b2, eps, wd, clip, steps
+            ("step_loss", [h["steps"]], step_losses),
+            ("step_grad_norm", [h["steps"]], norms),
+            ("step_lr", [h["steps"]], lrs),
+        ]
+        for n in names:
+            out2.append(("param." + n, list(Pt[n].shape), Pt[n].detach().reshape(-1).tolist()))
+        write_tsgd(sys.argv[3], out2)
+        print("%s: %d AdamW steps, losses %s, decay tensors %d" % (
+            sys.argv[3], h["steps"], " ".join("%.6f" % x for x in step_losses), len(decay)))
 
 
 if __name__ == "__main__":

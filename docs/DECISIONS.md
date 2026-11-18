@@ -372,3 +372,559 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   a benchmark, the machine spec table, and the clean-clone timing in its DoD.
   The ROADMAP edit itself is proposed separately. No effect on code, formats
   or the CUDA/MPI builds.
+
+## 2026-11-18: Gradient check uses a 4th-order 5-point finite difference (for P3.6), approved
+
+- **Change:** the full-model gradient check (P3.6, ROADMAP §10 "Gradcheck"
+  row) estimates each numeric derivative with the 4th-order central stencil
+  `f'(x) ≈ [−f(x+2h) + 8f(x+h) − 8f(x−h) + f(x−2h)] / (12h)` with **h = 1e-3**.
+  This replaces the 2-point central difference with ε = 1e-5. The **pass
+  criterion is unchanged:** every sampled entry (up to 20 random per tensor
+  plus first and last) must have
+  `|a − n| / max(|a|, |n|, 1e-8) < 1e-6` in the `REAL=double` build.
+  - The test also prints, per tensor, the worst relative error, the gradient
+    magnitude where it occurred, and the classic 2-point estimate, for
+    diagnosis.
+  - An entry that still fails is reported as a failure, never auto-passed,
+    even if it is below the measured noise floor. Such cases are resolved
+    case by case with the P3.7 PyTorch-autograd golden comparison.
+    Noise-aware acceptance (an absolute noise-floor pass) is not adopted;
+    it would need separate approval.
+- **Reason:** the 2-point difference has ~1e-10 absolute error (truncation
+  ε²|f'''|/6 plus rounding u·|L|/ε, with L ≈ ln 32 for the §10 model), so
+  gradient entries below ~1e-4 cannot be checked to 1e-6 even when the
+  backward is exact. That was observed in P3.3 and P3.4 (e.g. a 2.6e-7
+  gradient differing from its finite difference by 6e-12, the noise level).
+  The 5-point stencil (truncation O(h⁴), rounding ~1.5·u·|L|/h) is about 100×
+  more accurate (~1e-12 absolute), making entries down to ~1e-6 checkable at
+  the unchanged criterion. It costs twice the forward passes per entry,
+  which is negligible for the tiny gradcheck model.
+- **Rejected alternatives:** noise-aware acceptance (loosens the criterion for
+  small entries); a smaller-magnitude objective (no longer checks the real
+  loss end to end); threshold-based sampling (silently skips small-gradient
+  tensors); a `REAL=long double` build (new build mode, not portable,
+  no CUDA analogue).
+- **Impact:** test methodology only; no code contracts, formats or tolerances
+  change. P3.7 (golden autograd, per-tensor rel-L2 < 1e-4) remains the exact
+  backstop for small gradients. CUDA/MPI builds use the §10 cross-version
+  equivalence protocol, not this check. The per-op FD tests (P3.1–P3.4) keep
+  their 2-point differences; they all pass, and switch to this stencil only
+  if one of them needs it. The ROADMAP §10 "Gradcheck" row was updated to
+  name the new method.
+
+## 2026-11-18: Backward buffers and model_backward wiring (P3.5)
+
+- **Change:**
+  - **Activation layout:** `make_act_layout` appends 8 backward buffers
+    **after** all forward tensors, so forward offsets are unchanged. They are
+    shared by all layers: `d_logits [N,V]`, `d_x`/`d_ln`/`d_atty [N,C]`,
+    `d_qkv [N,3C]`, `d_fch_gelu`/`d_fch [N,4C]`, `att_scratch [B,NH,T,T]`.
+    `ActLayout` gains matching index fields, additive as planned in the
+    P0.4 entry.
+  - **New arena sizes at B=32, T=256** (from `make test`): `base` 1962.1 MB
+    (was 1473.6), `small` 1241.8 MB, `smoke` 15.2 MB at B=4, T=32. `base`
+    stays within the §13 estimate of 1.5–2 GB. `d_logits` gets its own
+    buffer rather than reusing `logits`, so `model_logits()` stays valid
+    after backward. Reusing it would save ~330 MB at `base` if ever needed.
+  - **`model_backward(Model*)`:** uses the last forward's saved activations
+    and its tokens/targets pointers, which `Model` keeps. The caller must
+    keep those buffers alive until backward has run.
+  - **Residual handling:** one `d_x` buffer carries the residual-stream
+    gradient top to bottom. Each residual add needs no extra op: `d_x` is
+    the branch's `dout`, and the branch's LayerNorm backward then adds back
+    into `d_x`.
+  - **Zeroing:** activation-gradient buffers are zeroed inside
+    `model_backward` right before each accumulating write. That time counts
+    toward `bwd`, per the zero-phase decision. Parameter gradients
+    accumulate and are zeroed by the training loop.
+  - **Tied head:** `grads[wte]` receives the head contribution (matmul
+    backward) and then the embedding contribution.
+- **Testing notes for P3.6:**
+  1. **Stencil evaluation order:** the 5-point stencil is evaluated
+     differences-first, `[8(L(h)−L(−h)) − (L(2h)−L(−2h))]/(12h)`. Subtracting
+     nearly equal losses is exact, so an entry the loss does not depend on
+     (e.g. untied `wte` rows of absent tokens) yields exactly 0. The summed
+     form `−L(2h)+8L(h)−8L(−h)+L(−2h)` left ~1e-13 of rounding, which failed
+     the 1e-8 floor.
+  2. **Key-bias gradients are structurally zero.** The key-bias slice of
+     every `qkv_b` has exactly zero true gradient: shifting all keys equally
+     changes every score of a query by the same amount, and softmax ignores
+     that. Finite differences cannot confirm 0 to the §10 floor (loss
+     rounding alone is ~1e-15). Measured: |d key-bias| / max|d q/v-bias| is
+     ≤ 7e-17 in double and ≤ 2e-8 in float. These entries are verified by a
+     direct check (`structurally_zero_gradients`) and excluded from FD
+     sampling. P3.6 should treat them the same way, as a documented
+     structural-zero case under the "case by case" clause of the gradcheck
+     decision.
+- **Impact:** CUDA/MPI use the same layout, so the arena grows the same way
+  on device. `model_backward` calls only `ops::` functions.
+
+## 2026-11-18: Gradcheck structural-zero exception for key biases (for P3.6), approved
+
+- **Change:** the full-model gradcheck (P3.6) samples `qkv_b` only from its
+  query `[0, C)` and value `[2C, 3C)` slices. The tensor's first index
+  (query) and last index (value) are still checked, as §10 requires. It
+  adds a **mandatory direct check** per layer, in the `REAL=double` build:
+  `max |d key-bias| ≤ 1e-12 · max |d query/value-bias|`, reported per layer.
+  If it fails, gradcheck fails. The ROADMAP §10 "Gradcheck" row was updated
+  to match.
+- **Reason:** the key-bias slice `[C, 2C)` has an exactly zero true gradient.
+  Adding the same vector to every key adds the same amount to all of a
+  query's scores, which softmax ignores. Finite differences cannot confirm
+  0 to the §10 floor (1e-8 relative, i.e. 1e-14 absolute): the perturbation
+  changes only forward rounding (~1e-15 in L), which gives ~1e-13 of
+  numeric noise after dividing by 12h. That would fail the criterion even
+  with a correct backward. The direct check is far stricter than FD could
+  be: P3.5 measured ≤ 7e-17 in double (`structurally_zero_gradients`).
+  This is the "case by case" resolution named in the gradcheck-stencil
+  decision above.
+- **Closed list:** the key-bias slice is the **only** exemption. Adding
+  another requires (1) a mathematical proof that the gradient is
+  structurally zero, (2) a direct check of it, and (3) team approval
+  recorded here. Every other sampled entry must pass the §10 criterion;
+  no generic noise-floor or tiny-gradient pass is allowed (rejected in the
+  stencil decision).
+- **Rejected alternatives:** a generic absolute tolerance for tiny
+  gradients (hides real small-gradient bugs); removing key biases from the
+  model (changes the §2.1/§2.2 contract, parameter counts and PyTorch
+  equivalence); relying on P3.7 alone (per-tensor rel-L2 could hide a
+  key-bias error); accepting recurring reported failures (trains people to
+  ignore gradcheck).
+- **Impact:** test methodology only; no code, contract or format change.
+  P3.7's per-tensor comparison against PyTorch autograd still covers
+  `qkv_b` as a whole.
+
+## 2026-11-18: Gradcheck configuration: h = 3e-4 on init weights ×3 (P3.6), approved
+
+- **Change:** the full-model gradcheck runs on the §10 tiny model with init
+  weights **×3** and stencil step **h = 3e-4**. This amends the h = 1e-3 of
+  the stencil decision above. The **pass criterion is unchanged**: rel err
+  < 1e-6, floor 1e-8, every sampled entry, plus the key-bias check. The
+  ROADMAP §10 row was updated. Implemented in `run_gradcheck`
+  (`include/tslm/gradcheck.h`), the `gradcheck` app and
+  `tests/test_gradcheck.cpp`.
+- **Reason:** measured in the `REAL=double` build, 10 seeds per
+  configuration:
+  - **Standard init (×1) never passes, at any step size** (0/10 tied and
+    untied, at h = 1e-3 and 3e-4). Some gradients there are ~1e-7 (e.g.
+    layer-0 LayerNorm biases), below the 5-point stencil's rounding noise
+    (~1.5·u·|L|/h ≈ 6e-13 at h = 1e-3), so they cannot be confirmed to 1e-6.
+  - **h = 1e-3 also fails on strongly curved entries through truncation.**
+    E.g. seed 99, `h1.proj_b`: rel err 1.75e-4 / 2.19e-6 / 1.8e-8 at
+    h = 3e-3 / 1e-3 / 3e-4. That is the O(h⁴) scaling; the analytic value is
+    correct, as smaller h and the 2-point estimate both converge to it.
+  - **h = 3e-4 with ×3 passed 10/10 seeds tied and 10/10 untied**, worst rel
+    err 1.5e-7 / 2.2e-7. Default seed 1337: worst 3.1e-8 tied, key-bias
+    ratios ≤ 8e-17.
+  - At ×3, attention is non-uniform and gradients sit well above the noise
+    floor, while the same code is tested.
+- **Not lost:** standard-init gradients are still covered exactly by the
+  P3.7 PyTorch-autograd golden comparison (no FD noise).
+- **Mutation evidence:** gradcheck failed on each of four planted backward
+  bugs: a dropped LayerNorm term (52 tensors failing across the tied and
+  untied runs), a missing attention dQ scale (36), a wrong GELU derivative
+  factor (48), and the wrong LN-1 input in `model_backward` (30).
+- **Impact:** test configuration only; no code contracts or formats change.
+
+## 2026-11-18: Backward golden data (P3.7)
+
+- **Change:**
+  - **Generator:** `dev_only/gen_golden.py` now builds every parameter as a
+    float64 leaf tensor, runs autograd on the mean loss, and adds
+    `grad.<name>` for every parameter to `<case>_fwd.bin`.
+  - **Regenerated files:** both committed cases (`tiny`, `tiny_untied_x10`)
+    were regenerated with PyTorch 2.5.1 from the unchanged `_init.bin`
+    inputs. Their `loss`/`losses`/`logits` tensors are **bit-identical** to
+    the previous files (checked tensor by tensor). Only gradients were
+    added, and the files grew from ~4 KB to 63–67 KB.
+  - **Test:** `tests/test_golden.cpp` compares every parameter gradient,
+    with per-tensor rel-L2 < 1e-4 (§10).
+  - **AdamW:** the "after 5 AdamW steps" part of the §10 golden row belongs
+    to P4.1 (which implements AdamW) and is added there.
+- **Reason:** ROADMAP §10, P3.7. This regeneration was done with the
+  generator, not by hand-editing the golden files (CLAUDE.md §2), because
+  the generator gained an output, not because a test failed.
+- **Measured** (worst per-tensor gradient rel-L2, limit 1e-4):
+
+  | Build | `tiny` | `tiny_untied_x10` |
+  |---|---|---|
+  | float | 2.6e-7 | 5.7e-6 |
+  | debug (float) | 4.0e-7 | 2.9e-5 |
+  | double | 6.1e-16 | 7.6e-14 |
+
+  The double-build `tiny` result confirms the standard-init gradients that
+  the finite-difference gradcheck cannot resolve.
+- **Impact:** CUDA/MPI builds compare against the same files (cross-version
+  protocol, §10).
+
+## 2026-11-18: AdamW golden trajectory; key-bias exception extended (P4.1), approved
+
+- **Change:**
+  - **Generator:** `dev_only/gen_golden.py` takes an optional third output,
+    `<case>_adamw.bin`. It runs 5 steps of `torch.optim.AdamW` (float64)
+    from the same init weights and batch: decay group = 2-D weights except
+    `wpe`, global-norm clip 1.0, and the §2.3 schedule set by hand each step.
+    It writes the hyperparameters, the per-step loss, the pre-clip grad norm,
+    the lr, and every final parameter. Golden settings: lr 1e-3,
+    min_lr_frac 0.1, warmup 2, max_steps 5, betas (0.9, 0.95), eps 1e-8,
+    wd 0.1. Files: `tests/golden/tiny_adamw.bin` (58 KB) and
+    `tiny_untied_x10_adamw.bin` (62 KB). The `_fwd.bin` files are unchanged.
+  - **Test:** `tests/test_golden.cpp` runs the C++ step loop
+    (`clip_grad_norm` → `lr_at` → `adamw_update`) and checks:
+    - step losses rel < 1e-5;
+    - grad norms rel < 1e-4;
+    - lr rel < 1e-14;
+    - final params per-tensor rel-L2 < 1e-4.
+  - **Key-bias exception extended:** the structural-zero exception above
+    (gradcheck, 2026-11-18) is extended to this one comparison, and the
+    closed list stays closed otherwise. For each `qkv_b`, only the query and
+    value slices go through the rel-L2 check. The key slice `[C, 2C)` must
+    instead satisfy `max|value| ≤ steps · lr` (= 5e-3), the largest
+    distance Adam can move a parameter from 0 in 5 steps.
+  - **Golden lr is 1e-3, not 1e-2.**
+- **Reasons:**
+  - **Key slice:** its true gradient is exactly 0 (softmax shift
+    invariance), so PyTorch's float64 values stay at ~1e-15. Our float
+    gradient is rounding noise of ~1e-9, and Adam normalizes it by
+    `sqrt(v)`, which turns noise into steps of size ~lr. A rel-L2 against
+    ~0 cannot pass and says nothing about correctness.
+  - **Golden lr:** at lr 1e-2 the ×10-weight untied case diverges
+    chaotically in float: the step-5 loss rel error was 2.5e-4, and several
+    biases sat at 1.1–1.5e-4. At 1e-3 the trajectory is well conditioned,
+    so the comparison tests the optimizer, not float sensitivity.
+- **Measured** (`make test`, `make debug`, `make test REAL=double`; worst
+  values):
+
+  | Build | case | step loss rel | grad-norm rel | params rel-L2 | key max \|value\| |
+  |---|---|---|---|---|---|
+  | float | tiny | 1.0e-8 | 5.7e-8 | 9.44e-7 | 6.8e-7 |
+  | float | untied_x10 | 6.7e-7 | 3.7e-5 | 1.71e-5 | 3.8e-4 |
+  | debug | tiny | 8.4e-9 | 4.8e-8 | 6.61e-7 | 4.4e-7 |
+  | debug | untied_x10 | 4.2e-7 | 1.6e-5 | 1.41e-5 | 5.1e-4 |
+  | double | tiny | 1.3e-16 | 1.5e-15 | 8.92e-16 | 5.7e-16 |
+  | double | untied_x10 | 5.3e-15 | 2.0e-13 | 5.86e-14 | 8.5e-13 |
+
+  The double build matches PyTorch to rounding on every tensor, including
+  the key slice. This validates the update rule, the clip, the decay mask
+  and the schedule exactly.
+- **Mutation evidence:** the golden AdamW tests failed on each of four
+  planted bugs:
+  - dropped second-moment bias correction;
+  - decay applied to every tensor;
+  - cosine without the min-lr floor;
+  - clip returning the post-clip norm.
+- **Impact:** CUDA/MPI builds compare against the same files with the same
+  key-slice rule. The `adamw_step` signature in `ops.h` is new (not a change
+  to an existing contract).
+
+## 2026-11-18: Training loop details (P4.2)
+
+- **log.csv rows:** written at step 1, every `log_every` steps, and at the
+  last step.
+  - `train_loss`, `lr` and `grad_norm` are that step's values: deterministic,
+    so builds can be compared row by row (`%.9g`).
+  - The timing columns and `tok_per_s` are per-step means over the steps
+    since the previous row; `step_ms` is the wall time of the whole step.
+  - `tokens_seen` and `tok_per_s` count global tokens (B·T·world_size).
+  - The frozen columns are unchanged.
+- **Step body:** follows §9 with zeroing timed under `bwd` (decision above).
+  - The loss is averaged over ranks under `comm`
+    (`comm_allreduce_sum_double` / size).
+  - `check_step_finite` aborts on a non-finite loss before the optimizer and
+    on a non-finite grad norm after it (`clip_grad_norm` already refuses a
+    non-finite norm before scaling).
+  - After init, params are `comm_broadcast` from rank 0 (no-op in serial).
+- **manifest.txt:** metadata lines start with `#`, so the config parser
+  ignores them, followed by `config_to_text`. The manifest is therefore a
+  valid `--config` file that reproduces the run (checked by a test and by
+  hand).
+  - Recorded: UTC date, git hash, build, compiler and flags, device, CPU
+    model, cores, RAM, world size, parameter summary, train tokens and
+    steps per epoch.
+  - The Makefile passes the git hash (`-dirty` when tracked files differ
+    from HEAD) and the flags to `src/train/manifest.cpp` only, through a
+    stamp file, so a new commit recompiles one object.
+- **Existing run directory:** files are overwritten, with a warning.
+  Resuming is P4.3.
+- **Not yet produced:** validation (P4.4) and checkpoints (P4.3) are not
+  implemented. The loop leaves `val_loss`/`val_ppl` empty and writes no
+  checkpoint files, and it says so in its startup log instead of failing,
+  so the `smoke` preset (`eval_every=50`) can run. P4.3/P4.4 replace that
+  notice.
+- **Measured** (`bin/train_serial --config configs/smoke.cfg`, real
+  `data/train.bin`, release float, this container's 4-core Xeon @ 2.10GHz):
+  - first run: 54.5 s wall, of which 5.7 s user CPU; `data_ms` dominated
+    (page-cache misses on the 927 MB mmapped file);
+  - immediate rerun: 5.0 s, `data_ms` ≈ 0.03 ms/step;
+  - both runs: loss 9.2202 → 6.2963, with identical loss/lr/grad_norm
+    columns.
+- **Impact:** CUDA/MPI builds use the same loop file; only the
+  backend/comm shims differ.
+
+## 2026-11-18: Checkpoint format and resume (P4.3)
+
+- **Format** (`include/tslm/checkpoint.h`, version 1): a 128-byte
+  little-endian header, then `params`, `m`, `v` as flat padded host buffers
+  (§9).
+  - **Header contents:** magic `TSCK`, version, ModelConfig, `step`,
+    `tokens_seen`, loader `{epoch, step}`, `num_params`,
+    `num_params_padded`.
+  - **Additions beyond the §9 list:**
+    - `real_bytes`: payload element size, 4 or 8;
+    - `seed`, `global_batch` and `seq_len`: the loader position means
+      nothing without them;
+    - an FNV-1a 64 checksum of the payload;
+    - 16 reserved zero bytes.
+- **Why `real_bytes`:** the production builds are all float32, but the
+  `REAL=double` build must be able to save and resume its own runs exactly.
+  - A file with the other element size is converted on load: exact for
+    float → double, rounded for double → float. A log line says so.
+  - Both directions are tested: the float build loads a double file, and
+    the double build loads a float file.
+- **Why seed / T / global batch:** resuming with any of them changed would
+  silently continue on a different data order, so a mismatch aborts.
+  Model-config and parameter-count mismatches abort too.
+- **Writing:**
+  - The payload streams through a fixed 64 KB stack buffer
+    (`copy_d2h`/`copy_h2d`), so no allocation happens in the loop and the
+    code works on device pointers.
+  - Each file is written to `<path>.tmp` and renamed.
+  - `ckpt_<step>.bin` and `ckpt_latest.bin` are written as two full saves of
+    identical bytes.
+  - Saving happens after the step's timing (`step_ms` excludes I/O), rank 0
+    only, followed by `comm_barrier`.
+  - Cadence: every `ckpt_every` steps and always at `max_steps`
+    (`ckpt_every=0`: only at the end).
+- **Resume:** a new config key `resume` (checkpoint path; empty = fresh run).
+  - It is a config key rather than an app-only flag, so a resumed run's
+    manifest records it and reproduces the run.
+  - Everything except params, m, v, step, tokens and loader position comes
+    from the run's config. This lets `max_steps` be extended; a changed
+    schedule is the user's choice.
+  - In the same run directory, `log.csv` keeps rows up to the checkpoint
+    step, and later rows (to be rerun) are dropped.
+  - The AdamW step count is the checkpoint step. Training uses no randomness
+    besides the loader permutation, which is a pure function of
+    (seed, epoch).
+- **Measured** (release float):
+  - `tests/test_checkpoint.cpp`: resuming from step 10 of a 20-step run
+    reproduces `ckpt_20.bin` byte for byte, both in a new directory and in
+    place, crossing an epoch boundary at step 15. `log.csv` loss/lr/grad_norm
+    are identical.
+  - `configs/smoke.cfg` on real data: resuming from `ckpt_100.bin` gave a
+    `ckpt_200.bin` byte-identical (`cmp`) to an uninterrupted run. The smoke
+    checkpoint is 4,005,632 bytes; save time 13–18 ms for two files.
+- **Mutation evidence:** the tests failed on each of five planted bugs:
+  - loader state not restored;
+  - AdamW step count off by one after resume;
+  - `v` not saved;
+  - checksum not verified;
+  - old `log.csv` rows not dropped.
+- **Impact:** all four builds read and write this format. Phase C ranks each
+  load the same file (no broadcast needed); Phase B/D stream through the
+  same `copy_*` calls.
+
+## 2026-11-18: Validation pass (P4.4)
+
+- **Fixed validation set:**
+  - **What it is:** §9 says "first `val_batches` chunks", but the key is
+    named for batches. It is read as the first `val_batches` *batches*:
+    chunks `[0, val_batches·gB)` of `val_data` in file order, unshuffled.
+  - **Batching:** batch i is chunks `[i·gB, (i+1)·gB)`, and rank r takes
+    rows `[r·B, (r+1)·B)`, as in training (§4.5). The same tokens are used
+    at every evaluation and in every build.
+  - **Loader:** `DataLoader::fixed_batch` reads it without touching the
+    shuffle state. A file too small for `val_batches` aborts at startup.
+- **Loss:** `val_loss` = (sum of batch-mean losses over batches and ranks) /
+  (val_batches · world_size). This equals the mean over all positions,
+  because every rank-batch has B·T positions. Sums are in double, combined
+  with `comm_allreduce_sum_double`. `val_ppl` = exp(`val_loss`).
+- **Cadence:**
+  - Validation runs every `eval_every` steps and at `max_steps`, after the
+    step's timing, so `step_ms` excludes it (as with checkpoints).
+  - Validation steps always get a `log.csv` row; `val_*` stay empty on
+    other rows.
+  - A fresh run also evaluates once before step 1 and prints the result to
+    the console only. There is no step-0 row, because `train_loss` has no
+    value there and the columns are fixed.
+  - It is forward only and touches no params, grads or optimizer state.
+    Tests show the training columns are identical whether validation runs
+    every step or only at the end.
+- **Measured:**
+  - Fresh V = 10000 model on synthetic data (`tests/test_eval.cpp`, seeds 1,
+    2, 1337): 9.21337, 9.21537, 9.20814 vs ln(10000) = 9.21034; the test
+    bound is ±0.05.
+  - `bin/train_serial --config configs/smoke.cfg` on real `data/val.bin`
+    (8 batches, 1024 tokens): 9.2164 at init, then 7.8005 / 6.5740 /
+    6.2122 / 6.1346 at steps 50 / 100 / 150 / 200. The train-loss column is
+    unchanged from P4.2 (6.2963 at step 200).
+- **Mutation evidence:** the tests failed on each of five planted bugs:
+  - wrong mean divisor;
+  - missing rank offset in `fixed_batch`;
+  - `val_ppl` not exponentiated;
+  - no validation at the last step;
+  - every validation batch reading batch 0.
+- **Impact:** the CUDA and MPI builds use the same loop and loader, so the
+  val loss is comparable across builds (the §10 cross-version check: within
+  1% after 100 steps).
+
+## 2026-11-18: Overfit and smoke tests; smoke preset tuned; 100k fixture (P4.5), approved
+
+- **Change:**
+  - **`tests/test_smoke.cpp`** runs both §10 rows in `make test`, using
+    `configs/smoke.cfg` loaded from disk. Only data paths and the output
+    dir are overridden, plus steps and cadence for the overfit test.
+  - **Smoke data:** the §10 "~1M-token subset" is replaced by a committed
+    real-data fixture (approved), `tests/fixtures/smoke_train.bin` and
+    `smoke_val.bin` (208 KB):
+    - train: `prepare_data --max_tokens 100000`, 99,958 tokens, 522 stories;
+    - val: the first 4,097 tokens of the matching `val.bin`, i.e. exactly
+      the 32 fixed validation batches.
+
+    It is regenerated byte-identically by the command in
+    `tests/fixtures/README.md`. `dev_only/truncate_tokens.py` cuts the val
+    file, offline only.
+  - **ROADMAP §10** smoke row amended; the TinyStories THIRD_PARTY row
+    records the redistributed excerpt (CDLA-Sharing-1.0).
+  - **`smoke.cfg`:** `lr` 1e-3 → 1e-2 and `val_batches` 8 → 32. Its comment
+    had marked these as placeholders to tune in P4.5.
+- **Reason:**
+  - CLAUDE.md §6 forbids tests that need the dataset, and a 1M subset
+    (2 MB of tokens) is too large to commit.
+  - 200 steps × 4 × 32 reads only 25,600 tokens, so 100k is never repeated
+    within an epoch, and the subset is still real text.
+  - At lr 1e-3 neither §10 criterion holds (measured below). 32 validation
+    batches (4,096 tokens) make the val estimate less noisy at negligible
+    cost.
+- **Criteria as implemented:**
+  - **Overfit:** a token file with exactly one global batch (the first 4
+    chunks of the fixture, written at test time), 300 steps, train loss
+    < 0.1.
+  - **Smoke:** `val_loss` at steps 50/100/150/200 decreases "coarsely",
+    meaning each may exceed the previous by at most 0.05; it must fall by
+    more than 0.3 overall and end below 6.0. Wall time must be under 60 s,
+    asserted in release builds only (the -O0 sanitizer build is not the
+    timed configuration; the time is printed in all builds).
+- **Measured** (release float, this container):
+
+  | lr | smoke val at 50 / 100 / 150 / 200 (100k fixture) | overfit loss at 300 |
+  |---|---|---|
+  | 1e-3 | 7.85 / 6.60 / 6.21 / 6.13 (1M subset, 8 val batches) | 1.9766 |
+  | 3e-3 | 6.19 / 6.12 / 6.07 / 6.04 (1M subset, 8 val batches) | 0.0061 |
+  | 1e-2 | 6.2771 / 6.0214 / 5.7996 / 5.7444 | 0.0002 |
+
+  - At lr 1e-2 on a real 1M subset, val ended at 5.76 (8 val batches), so
+    the 100k fixture is representative.
+  - `make test` times at lr 1e-2: smoke 6.4 s, overfit 7.6 s.
+- **Mutation evidence:**
+  - Restoring lr 1e-3 fails both tests.
+  - Disabling gradient clipping does not fail them: the smoke run barely
+    clips, and clipping is covered exactly by `test_optim`, the golden AdamW
+    test and the reference-loop test.
+- **Sanitizer build:**
+  - A debug (-O0 + ASan/UBSan) step takes about 1.2 s; the 300-step overfit
+    run alone took 377 s. So `make debug` runs a 10-step version of both
+    tests (validation and checkpoint included) that checks only finite,
+    decreasing losses, and the test prints that it did.
+  - The §10 criteria are asserted in the release and `REAL=double` builds.
+    Double measured: overfit 0.0002; smoke val 6.2771 / 6.0214 / 5.7999 /
+    5.7434.
+  - Times: `make test` 21 s, `make debug` 95 s, `make test REAL=double` 32 s.
+- **`tests/test_config.cpp`** pins each preset's lr. The smoke value was
+  updated 1e-3 → 1e-2 together with the preset; it is a deliberate retune,
+  not a weakened test.
+- **Full dataset:** `bin/train_serial --config configs/smoke.cfg` on the
+  full `data/` now ends at val 5.7001 (step 200).
+- **Impact:** the smoke preset is also benchmark workload W-C (§12). Its lr
+  changes the numbers, not the cost per step.
+
+## 2026-11-18: Sign-off tests for determinism, causality, resume, param counts (P5.1)
+
+- **Coverage map** (the four P5.1 layers of ROADMAP §10, all in `make test`):
+
+  | Layer | §10 criterion | Test |
+  |---|---|---|
+  | Param count | each preset matches §2.2 | `test_layout.cpp` `param_counts_match_roadmap` (base/small tied and untied exactly; smoke from the formula), since P0.4 |
+  | Determinism | 2 runs × 20 steps: log losses bit-identical, final param checksum identical | `test_signoff.cpp` `determinism_two_runs` (new) |
+  | Resume | 20 = 10 + checkpoint + 10, bit-identical params | `test_signoff.cpp` `resume_matches_uninterrupted` (new, smoke scale); `test_checkpoint.cpp` (tiny model, both directories) |
+  | Causality | perturb token t; logits at positions < t unchanged | `test_signoff.cpp` `causality_full_model` (new, full model); `test_attention.cpp` (op level) |
+
+- **Determinism and resume:** both run the `smoke` preset on the committed
+  real-data fixture with `log_every=1`.
+  - **Determinism:** every numeric `log.csv` column (step, tokens,
+    train/val loss, ppl, lr, grad norm) must match. The final checkpoint
+    must be byte-identical, and the FNV-1a of the final params is printed.
+  - **Second run:** it runs in a forked child whose heap is dirtied first:
+    2,000 blocks filled with 0xA5, every other one freed.
+- **Why dirty the heap:** a plain `fork()` copies the parent's heap, so the
+  child allocates at the same addresses as the parent. A planted bug that
+  scaled lr by a buffer address passed without the dirtying and failed with
+  it (measured). This catches address dependence and reads of reused small
+  heap blocks. Uninitialized reads of fresh `mmap` pages (always zero) are
+  not caught; that would need MemorySanitizer, which is not in the
+  toolchain.
+- **Causality:** a 2-layer model, tied and untied, perturbing batch row 0 at
+  t ∈ {0, 1, 7, 15}.
+  - Logits at positions < t must be bit-identical (`memcmp`).
+  - Position t must change.
+  - Batch row 1 must be bit-identical.
+  - A planted one-token look-ahead in attention forward fails it.
+- **Debug build:** determinism runs 2 × 6 steps and resume runs 6 = 3 + 3
+  (a smoke step takes ~1.2 s under -O0 + sanitizers); causality is
+  unchanged.
+- **Measured** (this container): `test_signoff` takes 2.2 s in release.
+  Final params FNV-1a, identical in both runs of each build:
+
+  | Build | FNV-1a |
+  |---|---|
+  | release float | `0d80323551e3bb51` |
+  | double | `a212a0f0162c37b2` |
+  | debug, 6 steps | `3f1add97f2972ba6` |
+
+  - The release value was reproduced from a from-scratch rebuild of
+    `build/release-cpu-serial-float` and by three separate executions.
+  - The very first test binary printed `3a787b8b4853b93d` (both runs
+    agreeing) before a later rebuild. Its linked objects cannot be
+    reconstructed, so that value is not used.
+  - The checksum is a per-binary reference: different compilers or flags may
+    legitimately round differently. The test requires only run-to-run
+    equality.
+- **Full suite:** `make test` 22 s, `make debug` 122 s,
+  `make test REAL=double` 31 s; 27/27 in each.
+- **Impact:** these tests are the §10 reference that Phases B–D must pass
+  unchanged on their own builds.
+
+## 2026-11-18: P5.2 run setup; run executed off-container (approved)
+
+- **Change:**
+  - **`configs/small.cfg` run values** (they had been placeholders "set in
+    P5.2"):
+    - `max_steps` 5000 → 2400: one epoch of the 20M-token subset is 2,441
+      steps, so no sequence repeats.
+    - `eval_every` 250 → 100.
+    - `ckpt_every` 1000 → 250.
+
+    Model and optimizer values are unchanged.
+  - **Data:** `prepare_data --max_tokens 20000000` gives 19,999,905 tokens
+    and 93,024 stories, with train coverage 99.8957%, val coverage 99.8648%
+    and vocab hash `4de4b6c3947630ff`.
+  - **`dev_only/plot_log.py`:** draws SVG curves from `log.csv` using the
+    standard library only, so no plotting dependency (e.g. matplotlib) is
+    added.
+  - **`docs/RUNS.md`:** exact commands, a resume recipe, and the plateau
+    criterion, fixed before the run.
+- **Where it runs (approved):** the full run executes on a teammate machine
+  or the cluster, not in this cloud container.
+  - Measured here: 3.8 s/step warm, which puts the run at about 2.7 h
+    including validation.
+  - This container is reclaimed when idle and caps one background command
+    at 2 h.
+  - The returned `log.csv` is then plotted and assessed against the
+    criterion. Results are recorded only from that file.
+- **Pilot (here):** the production command shortened to 20 steps.
+  - Loss 9.2461 → 7.4608; val 9.2382 at init, then 7.9299 / 7.4273.
+  - Resuming in place from step 10 reproduced `ckpt_20.bin` byte for byte.
+  - It validates the pipeline only.
+- **Impact:** none on code or formats. The `small` preset is also benchmark
+  workload W-A, which uses fixed step counts, so `max_steps` there is
+  overridden.

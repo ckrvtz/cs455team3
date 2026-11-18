@@ -356,11 +356,11 @@ for step in 1..max_steps:
 | Layer | Test | Pass criterion |
 |---|---|---|
 | Unit: each op | Forward vs hand-computed tiny case; backward vs finite difference | see below |
-| Gradcheck | Tiny model (`L=2,C=16,NH=2,V=32,T=8,B=2`), `real_t=double`, central difference ε=1e-5, up to 20 random indices per tensor **plus** first/last index | max relative error `|a−n|/max(|a|,|n|,1e-8)` < 1e-6 for all sampled entries |
-| Golden (PyTorch, offline) | `dump_init` writes init weights + a fixed batch; `dev_only/gen_golden.py` builds an architecturally identical PyTorch model in float64, writes loss, a logits slice, and every tensor's gradient to `tests/golden/*.bin`; C++ test loads them with **no Python at test time** | float32 serial vs float64 golden: loss rel err < 1e-5; grads per-tensor rel-L2 err < 1e-4; after 5 AdamW steps params rel-L2 < 1e-4 |
+| Gradcheck | Tiny model (`L=2,C=16,NH=2,V=32,T=8,B=2`) with init weights ×3, `real_t=double`, 4th-order 5-point central difference, h = 3e-4 (see `docs/DECISIONS.md`, 2026-11-18), up to 20 random indices per tensor **plus** first/last index; `qkv_b` is sampled from its query and value slices only (the key-bias slice has a structurally zero gradient, see `docs/DECISIONS.md`, 2026-11-18) | max relative error `|a−n|/max(|a|,|n|,1e-8)` < 1e-6 for all sampled entries; **and** per layer `max|d key-bias| ≤ 1e-12 · max|d q/v-bias|` |
+| Golden (PyTorch, offline) | `dump_init` writes init weights + a fixed batch; `dev_only/gen_golden.py` builds an architecturally identical PyTorch model in float64, writes loss, a logits slice, and every tensor's gradient to `tests/golden/*.bin`; C++ test loads them with **no Python at test time** | float32 serial vs float64 golden: loss rel err < 1e-5; grads per-tensor rel-L2 err < 1e-4; after 5 AdamW steps (golden lr 1e-3) params rel-L2 < 1e-4, with each `qkv_b` key slice instead bounded by `max|value| ≤ steps·lr` (structural zero, see `docs/DECISIONS.md`, 2026-11-18, P4.1) |
 | Init loss | Fresh `base` model on real data | initial loss within ±0.15 of ln(10000) ≈ 9.21 |
 | Overfit | `smoke` config, one fixed batch, 300 steps | loss < 0.1 |
-| Smoke training | `smoke` on ~1M-token subset, 200 steps | val loss decreases monotonically (coarsely) and ends below 6.0; run time under 1 min |
+| Smoke training | `smoke` on a 100k-token real subset committed as `tests/fixtures/smoke_*.bin` (was ~1M; see `docs/DECISIONS.md`, 2026-11-18, P4.5), 200 steps | val loss decreases monotonically (coarsely) and ends below 6.0; run time under 1 min |
 | Determinism | Same seed, same binary, 2 runs × 20 steps | log loss values bit-identical; final param checksum identical |
 | Resume | Train 20 steps = train 10 + checkpoint + resume 10 | bit-identical params |
 | Causality | Perturb token at position `t`; logits at positions `< t` | exactly unchanged |
@@ -447,7 +447,7 @@ Week mapping follows the proposal. **Owner** column is the proposal's suggested 
 
 | ID | Task | DoD |
 |---|---|---|
-| P7.1 | `bench` app (§12) emitting one CSV row per run | reproducible within ±3% across 3 runs |
+| P7.1 | `bench` app (§12) emitting one CSV row per run. **Must handle the cold page cache:** random-chunk reads of the mmapped token file are slow until it is cached, for far more than 3 warmup steps (measured in P4.2: smoke run 54.5 s cold vs 5.0 s warm, nearly all in `data_ms`; see `docs/DECISIONS.md`, "Training loop details"). Proposed: `bench` reads the whole token file once before the first timed step and records that it did; the rule is the same for every build and gets a DECISIONS entry plus a §12 line when adopted | reproducible within ±3% across 3 runs |
 | P7.2 | Profile serial (`perf` or `gprof`, dev-time only): confirm matmul dominates; record % by phase in `docs/PROFILE.md` | profile committed as text |
 | P7.3 | Complete `README.md` (maintained since P3.1): add exact commands to reproduce a smoke run, a `small` run and a benchmark, plus the machine spec table; re-verify every command from a clean clone | a teammate can reproduce from a clean clone in under 30 min of attended time; every README command verified in that run |
 | P7.4 | `docs/HANDOFF.md`: for each `ops::` function, a one-paragraph note of what its CUDA kernel must preserve (shapes, accumulation, tolerance), plus the memory arena sizes for each preset | complete for every function in `ops.h` |

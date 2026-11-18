@@ -112,21 +112,35 @@ void DataLoader::next_batch(int32_t* x, int32_t* y) {
     const size_t T = static_cast<size_t>(T_);
     const uint64_t gB = static_cast<uint64_t>(B_) * static_cast<uint64_t>(world_);
     const uint64_t base = state_.step * gB + static_cast<uint64_t>(rank_) * static_cast<uint64_t>(B_);
-    for (int b = 0; b < B_; ++b) {
-        const uint64_t chunk = perm_[base + static_cast<uint64_t>(b)];
-        const unsigned char* src = tokens_ + 2 * chunk * T;  // T+1 tokens from here
-        int32_t* xr = x + static_cast<size_t>(b) * T;
-        int32_t* yr = y + static_cast<size_t>(b) * T;
-        for (size_t t = 0; t <= T; ++t) {
-            const int32_t tok = static_cast<int32_t>(src[2 * t] | (src[2 * t + 1] << 8));
-            CHECK(static_cast<uint32_t>(tok) < vocab_size_,
-                  "DataLoader: token %d at position %llu >= vocab_size %u (corrupt file?)", tok,
-                  static_cast<unsigned long long>(chunk * T + t), vocab_size_);
-            if (t < T) xr[t] = tok;
-            if (t > 0) yr[t - 1] = tok;
-        }
-    }
+    for (int b = 0; b < B_; ++b)
+        copy_chunk(perm_[base + static_cast<uint64_t>(b)], x + static_cast<size_t>(b) * T,
+                   y + static_cast<size_t>(b) * T);
     state_.step += 1;
+}
+
+void DataLoader::fixed_batch(uint64_t index, int32_t* x, int32_t* y) const {
+    CHECK(tokens_ != nullptr, "DataLoader::fixed_batch before open");
+    const size_t T = static_cast<size_t>(T_);
+    const uint64_t gB = static_cast<uint64_t>(B_) * static_cast<uint64_t>(world_);
+    CHECK((index + 1) * gB <= num_chunks_, "DataLoader::fixed_batch: batch %llu needs %llu chunks, file has %llu",
+          static_cast<unsigned long long>(index), static_cast<unsigned long long>((index + 1) * gB),
+          static_cast<unsigned long long>(num_chunks_));
+    const uint64_t base = index * gB + static_cast<uint64_t>(rank_) * static_cast<uint64_t>(B_);
+    for (int b = 0; b < B_; ++b)
+        copy_chunk(base + static_cast<uint64_t>(b), x + static_cast<size_t>(b) * T, y + static_cast<size_t>(b) * T);
+}
+
+void DataLoader::copy_chunk(uint64_t chunk, int32_t* xr, int32_t* yr) const {
+    const size_t T = static_cast<size_t>(T_);
+    const unsigned char* src = tokens_ + 2 * chunk * T;  // T+1 tokens from here
+    for (size_t t = 0; t <= T; ++t) {
+        const int32_t tok = static_cast<int32_t>(src[2 * t] | (src[2 * t + 1] << 8));
+        CHECK(static_cast<uint32_t>(tok) < vocab_size_,
+              "DataLoader: token %d at position %llu >= vocab_size %u (corrupt file?)", tok,
+              static_cast<unsigned long long>(chunk * T + t), vocab_size_);
+        if (t < T) xr[t] = tok;
+        if (t > 0) yr[t - 1] = tok;
+    }
 }
 
 }  // namespace tslm

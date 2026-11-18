@@ -27,6 +27,18 @@ of each lane's in-order partial sum + scalar tail). This differs from a naive
 left-to-right sum by normal rounding error, which the matmul test checks
 against a rigorous order-independent error bound.
 
+## matmul_backward (`src/ops/matmul_cpu.cpp`), P3.2
+
+| Technique | Parameters | Why |
+|---|---|---|
+| Output-row ("axpy") loop order | none | `dinp[n,:] += dout[n,o]·W[o,:]` and `dW[o,:] += dout[n,o]·inp[n,:]` make the innermost loop run along a contiguous output row with independent elements, so it vectorizes without `-ffast-math` and without the forward pass's lane trick. Each element is summed in plain ascending order (over `o` for `dinp`, over `n` for `dW`/`dbias`). GCC `-fopt-info-vec` reports all five inner loops vectorized with 32-byte vectors. |
+| Register tile | 4 output rows | 4 `dinp` rows share each loaded `W` row; 4 `dW` rows share each loaded `inp` row. |
+| Cache blocking | same NB = 128, KC = 256, OB = 64 | `dinp`: a 64 × 256 `W` block (64 KiB, L2) is reused across 128 rows. `dW`: a 128 × 256 `inp` block (128 KiB, L2) feeds 4 `dW` row slices (4 KiB, L1). |
+| Leftovers | one row at a time | Correct for any N, C, OC; tested on block-boundary shapes. |
+
+Not done: no fusing of the three gradients into one pass, no transposed
+copies (the op cannot allocate), no threads.
+
 ## attention_forward (`src/ops/attention_cpu.cpp`), P2.3
 
 | Technique | Why |
@@ -39,6 +51,19 @@ against a rigorous order-independent error bound.
 Not done: no fusing of the stages, no tiling over T (T ≤ 256, so each head's
 rows fit in cache), no threads.
 
+## attention_backward (`src/ops/attention_cpu.cpp`), P3.3
+
+Same structure and caveat as forward: **causal lower triangle only**, in
+three explicit stages per (b, h):
+1. `datt = dY·Vᵀ` and `dV += attᵀ·dY`;
+2. softmax backward in place;
+3. `dQ += dpre·K`, `dK += dpreᵀ·Q`.
+
+The `scratch` argument (B·NH·T·T) holds `datt`/`dpre`; only its lower
+triangle is touched. The `datt` dot products use the lane technique; `dV`,
+`dQ` and `dK` are multiply-adds over the head dimension (vectorized, fixed
+order). Not done: no recomputation-free fusing, no tiling over T, no threads.
+
 ## softmax_xent_forward / sum_reduce (`src/ops/softmax_xent_cpu.cpp`), P2.4
 
 No special optimization. One pass for the row max, one for exp plus the
@@ -48,3 +73,18 @@ the double row sum run as scalar code: vectorizing them would need
 The op is memory/exp-bound and much cheaper than the head matmul that
 produces the logits. `sum_reduce` is a sequential double-precision sum
 (deterministic).
+
+## softmax_xent_backward (`src/ops/softmax_xent_cpu.cpp`), P3.4
+
+No special optimization. One pass per row: `dlogits += probs·(1/N)` over the
+non-target entries (contiguous, vectorized) and `(p_t − 1)·(1/N)` for the
+target. Memory-bound; it reads `probs` once.
+
+## sumsq_reduce / scale_inplace / adamw_step (`src/ops/optim_cpu.cpp`), P4.1
+
+No special optimization. `sumsq_reduce` is a sequential double-precision
+sum (deterministic, scalar). `scale_inplace` and `adamw_step` are
+element-wise loops over each parameter tensor; they auto-vectorize because
+`sqrt` and division are plain IEEE operations. The bias corrections are
+computed once per call in double. All three are memory-bound and run once
+per step, which is negligible next to the matmuls.

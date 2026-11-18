@@ -122,10 +122,77 @@ double model_forward(Model* model, const int32_t* tokens, const int32_t* targets
     ops::matmul_forward(model->act(A.logits), model->act(A.lnf), model->param(P.head_w), nullptr, N, C, V);
     model->B_last = B;
     model->T_last = T;
+    model->tokens_last = tokens;
+    model->targets_last = targets;
 
     if (!targets) return std::numeric_limits<double>::quiet_NaN();
     ops::softmax_xent_forward(model->act(A.probs), model->act(A.losses), model->act(A.logits), targets, N, V);
     return ops::sum_reduce(model->act(A.losses), static_cast<size_t>(N)) / static_cast<double>(N);
+}
+
+void model_backward(Model* model) {
+    CHECK(model != nullptr, "model_backward: null model");
+    CHECK(model->B_last > 0 && model->tokens_last != nullptr, "model_backward: no forward pass has run");
+    CHECK(model->targets_last != nullptr, "model_backward: the last forward had no targets (no loss to differentiate)");
+    const ModelConfig& c = model->cfg;
+    const ParamLayout& P = model->params_layout;
+    const ActLayout& A = model->acts_layout;
+    const int B = model->B_last, T = model->T_last;
+    const int C = c.n_embd, NH = c.n_head, V = c.vocab_size;
+    const int N = B * T;
+    const size_t NC = static_cast<size_t>(N) * static_cast<size_t>(C);
+    // Backward ops accumulate, so each activation-gradient buffer is zeroed
+    // (only the part in use) right before the op that writes it.
+    auto zero = [&](int idx, size_t elems) { dev_memset(model->act(idx), 0, elems * sizeof(real_t)); };
+
+    // Loss -> logits -> final LayerNorm. Head W is wte when tied, so the head
+    // gradient lands in grads[wte] here and the embedding adds to it at the end.
+    zero(A.d_logits, static_cast<size_t>(N) * static_cast<size_t>(V));
+    ops::softmax_xent_backward(model->act(A.d_logits), model->act(A.probs), model->targets_last, N, V);
+    zero(A.d_ln, NC);
+    ops::matmul_backward(model->act(A.d_ln), model->grad(P.head_w), nullptr, model->act(A.d_logits),
+                         model->act(A.lnf), model->param(P.head_w), N, C, V);
+    const real_t* x_top = model->act(A.layers.back().res3);
+    zero(A.d_x, NC);  // d_x = gradient of the residual stream, built top-down
+    ops::layernorm_backward(model->act(A.d_x), model->grad(P.lnf_g), model->grad(P.lnf_b), model->act(A.d_ln), x_top,
+                            model->param(P.lnf_g), model->act(A.lnf_mean), model->act(A.lnf_rstd), N, C);
+
+    for (int l = c.n_layer - 1; l >= 0; --l) {
+        const LayerParamIdx& p = P.layers[static_cast<size_t>(l)];
+        const LayerActIdx& a = A.layers[static_cast<size_t>(l)];
+        const real_t* x_in = l == 0 ? model->act(A.encoded) : model->act(A.layers[static_cast<size_t>(l - 1)].res3);
+
+        // MLP half: res3 = res2 + fcproj(gelu(fc(ln2(res2)))).
+        // d_x (= d res3) is the branch's dout; LN2 backward then adds the branch's
+        // input gradient back into d_x, which leaves d_x = d res2.
+        zero(A.d_fch_gelu, 4 * NC);
+        ops::matmul_backward(model->act(A.d_fch_gelu), model->grad(p.fcproj_w), model->grad(p.fcproj_b),
+                             model->act(A.d_x), model->act(a.fch_gelu), model->param(p.fcproj_w), N, 4 * C, C);
+        zero(A.d_fch, 4 * NC);
+        ops::gelu_backward(model->act(A.d_fch), model->act(a.fch), model->act(A.d_fch_gelu), 4 * NC);
+        zero(A.d_ln, NC);
+        ops::matmul_backward(model->act(A.d_ln), model->grad(p.fc_w), model->grad(p.fc_b), model->act(A.d_fch),
+                             model->act(a.ln2), model->param(p.fc_w), N, C, 4 * C);
+        ops::layernorm_backward(model->act(A.d_x), model->grad(p.ln2_g), model->grad(p.ln2_b), model->act(A.d_ln),
+                                model->act(a.res2), model->param(p.ln2_g), model->act(a.ln2_mean),
+                                model->act(a.ln2_rstd), N, C);
+
+        // Attention half: res2 = x_in + proj(attn(qkv(ln1(x_in)))); same pattern.
+        zero(A.d_atty, NC);
+        ops::matmul_backward(model->act(A.d_atty), model->grad(p.proj_w), model->grad(p.proj_b), model->act(A.d_x),
+                             model->act(a.atty), model->param(p.proj_w), N, C, C);
+        zero(A.d_qkv, 3 * NC);
+        ops::attention_backward(model->act(A.d_qkv), model->act(A.att_scratch), model->act(A.d_atty),
+                                model->act(a.qkv), model->act(a.att), B, T, C, NH);
+        zero(A.d_ln, NC);
+        ops::matmul_backward(model->act(A.d_ln), model->grad(p.qkv_w), model->grad(p.qkv_b), model->act(A.d_qkv),
+                             model->act(a.ln1), model->param(p.qkv_w), N, C, 3 * C);
+        ops::layernorm_backward(model->act(A.d_x), model->grad(p.ln1_g), model->grad(p.ln1_b), model->act(A.d_ln), x_in,
+                                model->param(p.ln1_g), model->act(a.ln1_mean), model->act(a.ln1_rstd), N, C);
+    }
+
+    // d_x is now the gradient w.r.t. the embedding output.
+    ops::embedding_backward(model->grad(P.wte), model->grad(P.wpe), model->act(A.d_x), model->tokens_last, B, T, C);
 }
 
 const real_t* model_logits(const Model* model) { return model->act(model->acts_layout.logits); }

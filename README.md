@@ -7,9 +7,11 @@ and CUDA+MPI. The plan is in [`ROADMAP.md`](ROADMAP.md) and the working rules
 are in [`CLAUDE.md`](CLAUDE.md).
 
 **Status (Phase A, serial):** the data pipeline (download, tokenizer, dataset
-preparation, loader), the full forward pass and the first backward ops are
-done. The remaining backward ops, the optimizer, training, generation and
-benchmarking are not built yet, so there is no `train` command.
+preparation, loader), the full forward and backward passes, and the
+full-model gradient check, the AdamW optimizer with its LR schedule, and the
+training loop (`train_serial`) with validation and checkpoint/resume are
+done (Phases 0–4); `make test` includes the overfit and smoke training tests.
+Generation and benchmarking are not built yet.
 
 ## Requirements
 
@@ -23,7 +25,7 @@ benchmarking are not built yet, so there is no `train` command.
 
 ```bash
 make                     # release build: -O3 -march=native, apps in bin/
-make test                # build and run every unit test (a few seconds)
+make test                # build and run every test, incl. overfit + smoke training (~20 s)
 make debug               # -O0 -g with AddressSanitizer + UBSan, then run all tests
 make test REAL=double    # double-precision build (used for gradient checks)
 make dist                # submission tarball dist/tslm.tar.gz (fails if any .py remains)
@@ -37,6 +39,21 @@ make clean               # remove build/, bin/, dist/
   object files.
 - **Not available yet:** `make BACKEND=cuda` and `make COMM=mpi` are later
   phases; they currently stop with a clear `#error`.
+
+### Gradient check
+
+```bash
+make REAL=double
+bin/release-double/gradcheck                       # tied tiny model; prints a per-tensor table, exit 0 on PASS
+bin/release-double/gradcheck --tie_embeddings 0    # untied head
+```
+
+This compares `model_backward` against finite differences on the ROADMAP
+§10 tiny model, about 0.2 s. Options: `--seed N`, `--scale S` (init weight
+multiplier, default 3), `--samples K` (default 20 per tensor), `--h H`
+(stencil step, default 3e-4), plus model/batch config keys. It runs only in
+the double-precision build; `bin/gradcheck` from a float build refuses with
+a message. `make test REAL=double` also runs it.
 
 ## Data
 
@@ -77,6 +94,49 @@ plus `--key value` overrides. Unknown keys are errors.
 | `small` | 2 | 128 | 4 | 256 | 1,709,568 |
 | `base` | 4 | 256 | 8 | 256 | 5,785,088 |
 
+## Training
+
+```bash
+bin/train_serial --config configs/smoke.cfg               # 200 steps of the tiny smoke model
+bin/train_serial --config configs/smoke.cfg --max_steps 50 --run_name try1
+bin/train_serial --config configs/smoke.cfg --ckpt_every 100                                  # also checkpoint at step 100
+bin/train_serial --config configs/smoke.cfg --ckpt_every 100 --resume runs/smoke/ckpt_100.bin # continue from step 100
+```
+
+- **Outputs** go to `runs/<run_name>/` (`--out_dir` changes `runs`):
+  - `manifest.txt`: date, git hash, build, compiler flags, CPU, then the full
+    resolved config. `--config runs/<run_name>/manifest.txt` reruns the same config.
+  - `log.csv`: one row at step 1, every `log_every` steps, at each
+    validation and at the end: training loss, validation loss and perplexity
+    (on validation rows), lr, grad norm, tokens/s, and per-step milliseconds
+    for data, forward, backward, comm and optimizer.
+  - `ckpt_<step>.bin` and `ckpt_latest.bin`: weights plus optimizer and data
+    position, every `ckpt_every` steps (0 = none) and always at the last step.
+
+  Rerunning a run name overwrites its files, with a warning.
+- **Resume:** `--resume <checkpoint>` continues from the step after it, with
+  the same seed, model, `batch_size` and `seq_len` (checked). In the same
+  run directory, `log.csv` rows after the checkpoint are replaced. A resumed
+  run gives the same results, bit for bit, as one that was never stopped.
+- **Data:** training reads `data/train.bin` (`--train_data` to change it).
+- **Validation:** every `eval_every` steps and at the end, on the same first
+  `val_batches` batches of `data/val.bin` (`--val_data`), forward only. A
+  fresh run also prints the validation loss before step 1 (about
+  ln 10000 = 9.21).
+- **Timing:** the first run after a reboot can be much slower. The 927 MB
+  token file is read at random positions, and those reads are slow until the
+  file is in the OS page cache; the extra time shows up in `data_ms`.
+
+## Long runs
+
+Real training runs and their results are recorded in
+[`docs/RUNS.md`](docs/RUNS.md). Loss curves are drawn from `log.csv` by an
+offline script (standard-library Python, developers only):
+
+```bash
+python3 dev_only/plot_log.py curves.svg runs/<run_name>/log.csv
+```
+
 ## Golden test data (developers only)
 
 Tests compare against small reference files committed in `tests/golden/`;
@@ -95,9 +155,9 @@ The PyPI `torch` wheel for Linux also installs about 2.5 GB of CUDA libraries.
 
 ```
 include/tslm/   public headers (ops.h, model.h, layout.h, backend.h, comm.h, ...)
-src/            library: common/ backend/ comm/ ops/ model/ data/
+src/            library: common/ backend/ comm/ ops/ model/ optim/ data/ train/
 apps/           command-line tools (thin main()s)
-tests/          unit tests (test_*.cpp) and golden data
+tests/          unit tests (test_*.cpp), golden data, and a 208 KB real-data fixture (tests/fixtures/)
 configs/        presets       scripts/  data download
 docs/           DECISIONS.md (design decision log), PROFILE.md (serial optimizations)
 dev_only/       offline Python for golden files; never built or shipped

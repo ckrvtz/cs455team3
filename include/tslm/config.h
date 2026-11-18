@@ -54,6 +54,7 @@ struct TrainConfig {
     int eval_every = 250;                   // validation cadence (steps)
     int val_batches = 20;                   // fixed val batches per evaluation
     int ckpt_every = 1000;                  // checkpoint cadence; 0 = only at end
+    std::string resume;                     // checkpoint to resume from; empty = fresh run
 };
 
 struct Config {

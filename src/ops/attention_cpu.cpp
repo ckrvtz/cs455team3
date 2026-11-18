@@ -1,4 +1,4 @@
-// attention_cpu.cpp: causal multi-head attention forward, CPU (ROADMAP §8, §6.2, §6.3).
+// attention_cpu.cpp: causal multi-head attention forward and backward, CPU (ROADMAP §8, §6.2, §6.3).
 //
 // Shapes (row-major): qkv [B,T,3C] (Q | K | V thirds; head h at
 // [h*hs, (h+1)*hs) inside each third, hs = C/NH), att [B,NH,T,T], out [B,T,C].
@@ -29,6 +29,24 @@
 // partial sums (as in matmul_cpu.cpp), so they vectorize without
 // -ffast-math. Stage 3 accumulates whole V rows in order of t2 (an axpy per
 // key, vectorized across the head dimension).
+//
+// BACKWARD (ACCUMULATES into dqkv, same layout as qkv). With dY = dout's
+// head slice, A = att, scale = 1/sqrt(hs), per (b, h), causal entries only:
+//   stage A  datt[t,t2] = dY(t) . V(t2)                  -> scratch
+//            dV(t2)    += sum_{t >= t2} A[t,t2] dY(t)
+//   stage B  dpre[t,t2] = A[t,t2] (datt[t,t2] - sum_{t2'<=t} A[t,t2'] datt[t,t2'])
+//            (softmax backward, in place in scratch; the row sum in double)
+//   stage C  dQ(t)  += scale sum_{t2<=t} dpre[t,t2] K(t2)
+//            dK(t2) += scale sum_{t>=t2} dpre[t,t2] Q(t)
+// Same three-stage, lower-triangle-only structure as forward (CUDA: two
+// batched GEMMs around a softmax-backward kernel). Only att is needed from
+// the forward pass; pre-softmax scores are never recomputed. The scratch
+// region for (b, h) is the T x T block at the same offset as att's. Only
+// its lower triangle is written and read, so its prior contents never
+// matter, and they are undefined on return.
+// Vectorization: datt uses lane_dot. dV, dQ and dK are axpys over the head
+// dimension (independent elements). Each gradient element is summed in
+// ascending t (dV, dK) or t2 (dQ) order, so results are deterministic.
 #include "tslm/ops.h"
 
 #include <cmath>
@@ -103,6 +121,68 @@ void attention_forward(real_t* out, real_t* att, const real_t* qkv, int B, int T
                     const real_t a = row[t2];
                     const real_t* v = qkv_b + t2 * C3 + 2 * Cs + hoff;
                     for (size_t i = 0; i < hs; ++i) o[i] += a * v[i];
+                }
+            }
+        }
+    }
+}
+
+void attention_backward(real_t* dqkv, real_t* scratch, const real_t* dout, const real_t* qkv, const real_t* att, int B,
+                        int T, int C, int NH) {
+    const size_t Ts = static_cast<size_t>(T);
+    const size_t Cs = static_cast<size_t>(C);
+    const size_t C3 = 3 * Cs;
+    const size_t hs = Cs / static_cast<size_t>(NH);
+    const real_t scale = static_cast<real_t>(1.0 / std::sqrt(static_cast<double>(hs)));
+
+    for (int b = 0; b < B; ++b) {
+        const real_t* qkv_b = qkv + static_cast<size_t>(b) * Ts * C3;
+        real_t* dqkv_b = dqkv + static_cast<size_t>(b) * Ts * C3;
+        const real_t* dout_b = dout + static_cast<size_t>(b) * Ts * Cs;
+        for (int h = 0; h < NH; ++h) {
+            const size_t hoff = static_cast<size_t>(h) * hs;
+            const size_t blk = (static_cast<size_t>(b) * static_cast<size_t>(NH) + static_cast<size_t>(h)) * Ts * Ts;
+            const real_t* A = att + blk;
+            real_t* D = scratch + blk;  // datt, then dpre (lower triangle only)
+
+            // Stage A: datt = dY V^T; dV += A^T dY.
+            for (size_t t = 0; t < Ts; ++t) {
+                const real_t* dy = dout_b + t * Cs + hoff;
+                const real_t* arow = A + t * Ts;
+                real_t* drow = D + t * Ts;
+                for (size_t t2 = 0; t2 <= t; ++t2) {
+                    const real_t* v = qkv_b + t2 * C3 + 2 * Cs + hoff;
+                    real_t* dv = dqkv_b + t2 * C3 + 2 * Cs + hoff;
+                    drow[t2] = lane_dot(dy, v, hs);
+                    const real_t a = arow[t2];
+                    for (size_t i = 0; i < hs; ++i) dv[i] += a * dy[i];
+                }
+            }
+
+            // Stage B: softmax backward in place, dpre = A * (datt - sum(A * datt)).
+            for (size_t t = 0; t < Ts; ++t) {
+                const real_t* arow = A + t * Ts;
+                real_t* drow = D + t * Ts;
+                double dotsum = 0.0;
+                for (size_t t2 = 0; t2 <= t; ++t2)
+                    dotsum += static_cast<double>(arow[t2]) * static_cast<double>(drow[t2]);
+                const real_t ds = static_cast<real_t>(dotsum);
+                for (size_t t2 = 0; t2 <= t; ++t2) drow[t2] = arow[t2] * (drow[t2] - ds);
+            }
+
+            // Stage C: dQ += scale dpre K; dK += scale dpre^T Q.
+            for (size_t t = 0; t < Ts; ++t) {
+                const real_t* drow = D + t * Ts;
+                const real_t* q = qkv_b + t * C3 + hoff;
+                real_t* dq = dqkv_b + t * C3 + hoff;
+                for (size_t t2 = 0; t2 <= t; ++t2) {
+                    const real_t g = drow[t2] * scale;
+                    const real_t* k = qkv_b + t2 * C3 + Cs + hoff;
+                    real_t* dk = dqkv_b + t2 * C3 + Cs + hoff;
+                    for (size_t i = 0; i < hs; ++i) {
+                        dq[i] += g * k[i];
+                        dk[i] += g * q[i];
+                    }
                 }
             }
         }
