@@ -150,8 +150,13 @@ make clean               # remove build/, bin/, dist/
 - **Build directories:** each configuration builds in its own
   `build/<mode>-<backend>-<comm>-<real>/`, so switching builds never mixes
   object files.
-- **Not available yet:** `make BACKEND=cuda` and `make COMM=mpi` are later
-  phases; they currently stop with a clear `#error`.
+- **Not available yet:** `make BACKEND=cuda` (Phase B) and `make COMM=mpi`
+  (Phase C) stop with one clear message.
+  - **Toolchain missing:** the message names the tool (`nvcc` or `mpicxx`,
+    selectable with `NVCC=` / `MPICXX=`).
+  - **Toolchain present:** the build stops at the stubs
+    `src/ops/ops_cuda.cu` / `src/comm/comm_mpi.cpp`, which list what each
+    phase must implement (see also [`docs/HANDOFF.md`](docs/HANDOFF.md)).
 
 ### Gradient check
 

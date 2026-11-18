@@ -5,6 +5,7 @@
 #   make debug                 -O0 -g ASan/UBSan build, then run the tests under it
 #   make test REAL=double      double-precision build (gradient checks)
 #   make BACKEND=cuda          Phase B   | make COMM=mpi  Phase C | both: Phase D
+#                              (stubs until then; NVCC=/MPICXX= select the tools)
 #   make dist                  submission tarball (fails if Python files remain)
 #   make MODE=profile          dev-only gprof build (release flags + -pg) -> bin/profile-float/
 #   make clean
@@ -35,6 +36,28 @@ endif
 
 # ---- toolchain and flags
 CXX      ?= g++
+NVCC     ?= nvcc
+MPICXX   ?= mpicxx
+
+# Phase B/C/D toolchains (P7.5). BACKEND=cuda compiles src/*/*_cuda.cu with
+# $(NVCC); COMM=mpi compiles everything with the MPI wrapper $(MPICXX). A
+# missing tool stops make here with one message, before anything compiles.
+# With the tools present, the build still stops at the stubs and the guards
+# in include/tslm/build_config.h until those phases are implemented.
+ifneq ($(if $(MAKECMDGOALS),$(filter-out clean dist,$(MAKECMDGOALS)),all),)
+ifeq ($(BACKEND),cuda)
+ifeq ($(shell command -v $(NVCC) 2>/dev/null),)
+$(error BACKEND=cuda needs the CUDA compiler '$(NVCC)' (CUDA toolkit), which was not found; set NVCC=/path/to/nvcc. The CUDA backend itself is Phase B and not implemented yet: see src/ops/ops_cuda.cu and docs/HANDOFF.md)
+endif
+endif
+ifeq ($(COMM),mpi)
+ifeq ($(shell command -v $(MPICXX) 2>/dev/null),)
+$(error COMM=mpi needs the MPI compiler wrapper '$(MPICXX)' (OpenMPI), which was not found; set MPICXX=/path/to/mpicxx. The MPI build itself is Phase C and not implemented yet: see src/comm/comm_mpi.cpp)
+endif
+CXX := $(MPICXX)
+endif
+endif
+
 CXXSTD   := -std=c++17
 WARN     := -Wall -Wextra -Wpedantic
 CPPFLAGS := -Iinclude -MMD -MP \
@@ -101,6 +124,9 @@ ALL_LIB_SRCS     := $(wildcard src/*/*.cpp)
 LIB_SRCS := $(filter-out $(VARIANT_PATTERNS),$(ALL_LIB_SRCS)) \
             $(filter %_$(BACKEND).cpp %_$(COMM).cpp,$(ALL_LIB_SRCS))
 LIB_OBJS := $(LIB_SRCS:%.cpp=$(BUILD_DIR)/%.o)
+# CUDA sources (*_cuda.cu) only in BACKEND=cuda builds, compiled by $(NVCC).
+CU_SRCS  := $(if $(filter cuda,$(BACKEND)),$(wildcard src/*/*_cuda.cu))
+LIB_OBJS += $(CU_SRCS:%.cu=$(BUILD_DIR)/%.o)
 LIB      := $(BUILD_DIR)/libtslm.a
 
 APP_SRCS := $(wildcard apps/*.cpp)
@@ -134,6 +160,12 @@ debug:
 $(BUILD_DIR)/%.o: %.cpp $(TARGET_STAMP)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+# nvcc gets the -D/-I flags but not g++'s -MMD/-MP/-march/warning flags;
+# Phase B adds its own flags (architecture, -O3) here.
+$(BUILD_DIR)/%.o: %.cu $(TARGET_STAMP)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(filter-out -MMD -MP,$(CPPFLAGS)) $(CXXSTD) -c $< -o $@
 
 # ---- build facts for runs/<name>/manifest.txt (src/train/manifest.cpp only).
 # The git hash ("-dirty" if tracked files differ from HEAD, "unknown" outside a

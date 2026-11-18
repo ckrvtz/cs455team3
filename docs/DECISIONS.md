@@ -1278,3 +1278,34 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   Logits, probs and d_logits are 312.5 MB each for `small` and `base`.
 - **Not a contract change:** `ops.h` is unchanged; this document describes
   it.
+
+## 2026-11-18: CUDA and MPI build stubs (P7.5)
+
+- **Change:**
+  - **`src/ops/ops_cuda.cu`:** an `#error` stub listing every `ops.h`
+    function Phase B must implement, and the backend file it also needs.
+  - **`src/comm/comm_mpi.cpp`:** an `#error` stub with the MPI mapping of
+    each `comm.h` call.
+
+  In both, the `#error` comes before any include, so a missing CUDA or MPI
+  installation is never what gets reported.
+- **Makefile:**
+  - `NVCC ?= nvcc` and `MPICXX ?= mpicxx`.
+  - `BACKEND=cuda` adds `src/*/*_cuda.cu` to the library, compiled by
+    `$(NVCC)` with the -D/-I flags (not g++'s `-MMD`/`-march`/warning
+    flags).
+  - `COMM=mpi` compiles everything with `$(MPICXX)`.
+  - If the tool is not on PATH, make stops before compiling, with one
+    message naming the tool, how to point at it, and the stub to read.
+    `clean` and `dist` still work.
+- **Verified here** (no CUDA or MPI installed):
+  - `make BACKEND=cuda`, `make COMM=mpi` and both together stop with the
+    toolchain message.
+  - With stand-in tools (`MPICXX=g++`; an `nvcc` wrapper running
+    `g++ -x c++`), the build stops at the existing `build_config.h` guards
+    ("not supported yet (Phase B/C)").
+  - Compiling the stubs alone through the real rules, including the new
+    `.cu` rule, stops at each stub's own `#error`.
+  - Default builds never reference the stubs.
+- **Kept:** the `build_config.h` guards stay until each phase lands. Each
+  phase removes its own guard and replaces its stub.
