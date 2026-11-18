@@ -1,17 +1,19 @@
 # Project status
 
-**Last updated:** 2026-11-18, through ROADMAP task **P4.3** (commit `bbfedd8`).
+**Last updated:** 2026-11-18, through ROADMAP task **P5.1**, with P5.2 set up (commit `1a2f6a5`).
 This snapshot is updated on request, not after every task. For the live record
 of decisions see [`DECISIONS.md`](DECISIONS.md); for build and run
 instructions see [`../README.md`](../README.md).
 
-Phases 0–3 of the serial build and the first three Phase 4 tasks are done.
-The data pipeline, the forward and backward passes, the AdamW optimizer, the
-training loop and checkpoint/resume all work, and they are checked by 24 test
-binaries in three build modes (release, sanitizer debug, double precision).
-The backward pass matches PyTorch float64 and a finite-difference gradient
-check, and a resumed run is bit-identical to an uninterrupted one. The
-validation pass, generation and benchmarking are not built yet.
+Phases 0–4 and P5.1 of the serial build are done. The data pipeline, the
+forward and backward passes, the AdamW optimizer, and the training loop with
+validation and checkpoint/resume all work. They are checked by 27 test
+binaries in three build modes (release, sanitizer debug, double precision),
+including every ROADMAP §10 sign-off layer: gradient check, PyTorch golden
+files, overfit, smoke training, determinism, resume, causality and parameter
+counts. The first real `small` run (P5.2) is prepared and pilot-tested; it
+runs off-container and its results are pending. Generation and benchmarking
+are not built yet.
 
 ## Build and project docs
 - **`Makefile`:** builds the four modes through `BACKEND`/`COMM`/`REAL`; CUDA and
@@ -20,6 +22,8 @@ validation pass, generation and benchmarking are not built yet.
 - **`README.md`:** how to build, test, get the data, train and run the tools.
 - **`docs/DECISIONS.md`:** every design decision, with its reason.
 - **`docs/PROFILE.md`:** every serial optimization.
+- **`docs/RUNS.md`:** commands, cost estimate and plateau criterion for the
+  long P5.2 run; its results go here.
 - **`THIRD_PARTY.md`:** citations (RNG algorithms, GPT-2 BPE scheme, dataset,
   tokenizer files, HF `tokenizers`).
 - **`CLAUDE.md` / `ROADMAP.md`:** the working agreement and the technical plan,
@@ -76,8 +80,10 @@ validation pass, generation and benchmarking are not built yet.
   gradient clipping, and AdamW with weight decay on 2-D weights only. Matches
   a 5-step PyTorch AdamW run (worst parameter error 1.7e-5 in float).
 - **`train.h/.cpp` + `train_serial`** (app): the training loop with per-phase
-  timing, NaN/Inf checks and `log.csv`. The smoke preset runs 200 steps on
-  real data in about 5 s with a warm page cache (loss 9.22 → 6.30).
+  timing, NaN/Inf checks and `log.csv`. The smoke preset (lr tuned to 1e-2 in
+  P4.5) runs 200 steps on the full data and ends at val loss 5.70.
+- **`eval.h/.cpp`:** validation loss and perplexity on fixed validation
+  batches, every `eval_every` steps; a fresh model scores ≈ ln(10000).
 - **`manifest.cpp`:** writes each run's `manifest.txt` (git hash, build,
   machine, full config); it can be reloaded with `--config` to rerun.
 - **`checkpoint.h/.cpp`:** checkpoint save/load (weights, optimizer state,
@@ -85,11 +91,14 @@ validation pass, generation and benchmarking are not built yet.
 
 ## Tests (`tests/`)
 - **`test.h`:** our own test harness.
-- **24 test files** covering: build mode, config, RNG, memory/communication/
+- **27 test files** covering: build mode, config, RNG, memory/communication/
   timer, layout, tokenizer, `prepare_data`, data loader, vocab map, forward
   ops, matmul, attention, softmax, model, golden tests, backward ops (matmul,
   attention, softmax, model), gradient check, optimizer, training loop,
-  checkpoints.
+  checkpoints, validation, overfit + smoke training, and the sign-off tests
+  (determinism across processes, resume, full-model causality).
+- **`tests/fixtures/`:** a 208 KB excerpt of real tokenized TinyStories
+  (100k train + 4,097 val tokens) so the smoke tests need no download.
 - **`tests/golden/`:** small committed reference data: tokenizer cases, a subset
   tokenizer vocabulary, and the PyTorch float64 init weights, forward results,
   gradients and 5-step AdamW trajectories.
@@ -98,10 +107,14 @@ validation pass, generation and benchmarking are not built yet.
 - **`gen_tokenizer_golden.py`:** generates the tokenizer reference cases.
 - **`gen_golden.py`:** the float64 PyTorch reference model (loss, gradients,
   AdamW trajectory).
+- **`truncate_tokens.py`:** cuts the validation fixture from `val.bin`.
+- **`plot_log.py`:** train/val loss curves from `log.csv` as SVG (standard
+  library only).
 
 ## Next
-P4.4 (validation pass and perplexity, filling the `val_loss`/`val_ppl`
-columns), then P4.5 (overfit test and smoke training test in `make test`).
-After that comes the serial correctness sign-off (Phase 5). Known item for
-P7.1: benchmarks must pre-warm the token file, because cold-cache reads
-dominate `data_ms` (smoke run 54.5 s cold vs 5.0 s warm).
+Finish P5.2: run the 2,400-step `small` job per `docs/RUNS.md` (estimated
+≈2.7 h from a measured 3.8 s/step pilot), then plot and assess its `log.csv`
+against the pre-set plateau criterion. Phase 6 (generation, P6.1) can start
+meanwhile; P5.3 (Serial Complete gate) follows both. Known item for P7.1:
+benchmarks must pre-warm the token file, because cold-cache reads dominate
+`data_ms` (smoke run 54.5 s cold vs 5.0 s warm).
