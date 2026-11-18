@@ -6,12 +6,128 @@ from scratch in C++17. It is planned in four builds: serial, CUDA, serial+MPI
 and CUDA+MPI. The plan is in [`ROADMAP.md`](ROADMAP.md) and the working rules
 are in [`CLAUDE.md`](CLAUDE.md).
 
-**Status (Phase A, serial):** the data pipeline (download, tokenizer, dataset
-preparation, loader), the full forward and backward passes, and the
-full-model gradient check, the AdamW optimizer with its LR schedule, and the
-training loop (`train_serial`) with validation and checkpoint/resume are
-done (Phases 0–4); `make test` includes the overfit and smoke training tests.
-Generation and benchmarking are not built yet.
+**Status (Phase A, serial):** the serial build is complete and tested.
+- **Done:**
+  - the data pipeline: download, our own BPE tokenizer, dataset preparation,
+    loader;
+  - forward and backward passes, verified by a gradient check and PyTorch
+    golden files;
+  - AdamW;
+  - training with validation and checkpoint/resume;
+  - generation, prompt evaluation, benchmarks and profiling;
+  - the CUDA hand-off notes (P7.4) and build stubs (P7.5);
+  - the first full `small` run (P5.2): val loss 2.6455 (ppl 14.1) after
+    2,400 steps, plateau accepted (`docs/RUNS.md`).
+- **Pending:**
+  - the two-rater scoring pilot (P6.3);
+  - the Serial Complete review (P5.3).
+- **Next:** the CUDA build (`ROADMAP_CUDA.md`).
+
+## Quick start (clean clone to a trained smoke model)
+
+Measured on the reference machine below: 138 s of machine time from
+`git clone` to the evaluated model, of which download 31 s, tokenization
+35 s and `make test` 47 s (network speed varies).
+
+```bash
+git clone https://github.com/ckrvtz/cs455team3.git
+cd cs455team3
+make
+make test
+scripts/download_data.sh
+bin/prepare_data
+bin/train_serial --config configs/smoke.cfg
+bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --temperature 0.8 --top_k 50 --seed 7
+bin/eval --ckpt runs/smoke/ckpt_latest.bin
+```
+
+- **`make test`** runs all 30 test programs in about 20 s, including the
+  gradient check, the PyTorch golden comparisons, and the overfit and smoke
+  training tests.
+- **Training** writes `runs/smoke/` (`manifest.txt`, `log.csv`, checkpoints).
+  At step 200 the validation loss is about 5.7.
+- **The smoke model is tiny** (333k parameters), so its samples are word
+  salad. Readable stories need recipe 2.
+
+## Reproducing the results
+
+### 1. Smoke run (seconds)
+
+The quick start above. On the reference machine,
+`bin/train_serial --config configs/smoke.cfg` finishes in about 5 s with a
+warm page cache. It ends at train loss 6.1013 and val loss 5.6889
+(`docs/DECISIONS.md`).
+
+### 2. `small` run (P5.2: about 2.7 h serial)
+
+```bash
+mkdir -p data/p52
+bin/prepare_data --max_tokens 20000000 --out_dir data/p52
+bin/train_serial --config configs/small.cfg --train_data data/p52/train.bin --val_data data/p52/val.bin --run_name small_p52
+bin/train_serial --config configs/small.cfg --train_data data/p52/train.bin --val_data data/p52/val.bin --run_name small_p52 --resume runs/small_p52/ckpt_latest.bin
+python3 dev_only/plot_log.py runs/small_p52/curves.svg runs/small_p52/log.csv
+bin/eval --ckpt runs/small_p52/ckpt_latest.bin --vocab_map data/p52/vocab_map.txt
+```
+
+- **What it is:** 20M training tokens and 2,400 steps (one epoch), with
+  validation every 100 steps and checkpoints every 250.
+- **Run it unattended** (`nohup`, `tmux`, or a batch job).
+- **If it stops:** the second `train_serial` command (with `--resume`)
+  continues from the last checkpoint, bit-identically.
+- **Afterwards:** `plot_log.py` draws the loss curves and `eval` writes the
+  prompt samples.
+- **Details:** the expected cost and the plateau criterion are in
+  [`docs/RUNS.md`](docs/RUNS.md).
+- **How far it was verified:** in the clean-clone check (below), training
+  ran to its first checkpoint (step 250, 1006 s) and was stopped, and
+  resuming continued to step 260. The full 2,400-step run was done on a
+  teammate's machine (P5.2); its log, curves and samples are in
+  `docs/runs/small_p52/`.
+
+### 3. Benchmarks (about 12 min)
+
+```bash
+make clean && make
+scripts/bench.sh W-C
+scripts/bench.sh W-A
+```
+
+- **Output:** each command appends 3 rows to `bench/serial_<workload>.csv`.
+- **Reference results:** the committed CSVs, measured on the reference
+  machine:
+
+  | Workload | Median step time | Tokens/s |
+  |---|---|---|
+  | W-C (smoke) | ≈ 20.1 ms | 6.3k–6.4k |
+  | W-A (small, B=32) | ≈ 3.61 s | 2.25k–2.30k |
+- **Conditions:** run on an idle machine.
+
+### Verification
+
+Every command in this README was run, in order, from a fresh clone on the
+reference machine on 2026-11-18. That is 32 commands in 2,088 s of machine
+time: the long `small` training was stopped at its first checkpoint, as
+described above. One command failed (`scripts/profile.sh`, a SIGPIPE under
+`pipefail`); it was fixed and passed twice on rerun. The log is in
+`docs/DECISIONS.md`.
+
+### Reference machine
+
+All recorded timings come from this machine unless a record says otherwise.
+
+| | |
+|---|---|
+| CPU | Intel Xeon Processor @ 2.30GHz with AVX-512 (cloud container), 4 vCPU; the serial build uses 1 |
+| RAM | 16 GB |
+| OS | Ubuntu 24.04.5 LTS |
+| Compiler | g++ 13.3.0, flags `-std=c++17 -O3 -march=native` |
+| Make | GNU Make 4.3 |
+
+Earlier records (up to 2026-11-18 05:30 UTC) came from the same container on
+an "Intel Xeon @ 2.10GHz" host (`docs/DECISIONS.md`). `-march=native` makes
+objects CPU-specific. The Makefile rebuilds everything when the CPU or
+compiler changes, and results are bit-reproducible per build, not across
+CPUs.
 
 ## Requirements
 
@@ -37,8 +153,13 @@ make clean               # remove build/, bin/, dist/
 - **Build directories:** each configuration builds in its own
   `build/<mode>-<backend>-<comm>-<real>/`, so switching builds never mixes
   object files.
-- **Not available yet:** `make BACKEND=cuda` and `make COMM=mpi` are later
-  phases; they currently stop with a clear `#error`.
+- **Not available yet:** `make BACKEND=cuda` (Phase B) and `make COMM=mpi`
+  (Phase C) stop with one clear message.
+  - **Toolchain missing:** the message names the tool (`nvcc` or `mpicxx`,
+    selectable with `NVCC=` / `MPICXX=`).
+  - **Toolchain present:** the build stops at the stubs
+    `src/ops/ops_cuda.cu` / `src/comm/comm_mpi.cpp`, which list what each
+    phase must implement (see also [`docs/HANDOFF.md`](docs/HANDOFF.md)).
 
 ### Gradient check
 
@@ -127,6 +248,86 @@ bin/train_serial --config configs/smoke.cfg --ckpt_every 100 --resume runs/smoke
   token file is read at random positions, and those reads are slow until the
   file is in the OS page cache; the extra time shows up in `data_ms`.
 
+### Loss of a checkpoint on fixed batches
+
+```bash
+bin/eval_loss --ckpt runs/small_p52/ckpt_latest.bin --data data/p52/val.bin                   # reproduces the run's final val_loss
+bin/eval_loss --ckpt runs/small_p52/ckpt_latest.bin --data data/p52/train.bin --batches 100   # final model on fixed training data
+```
+
+- **What it computes:** the validation pass of training, forward only, on
+  the first `--batches` batches of any token file, in file order.
+- **Defaults:** `--batches 20`, `--batch_size 32`, `--seq_len` = the model's
+  context.
+- **Output:** loss, perplexity and token count.
+
+## Generation
+
+```bash
+bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --greedy 1 --max_new 40
+bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --temperature 0.8 --top_k 50 --seed 7
+```
+
+- **Input:** a checkpoint from a training run; the model shape comes from
+  it. `--vocab_map` (default `data/vocab_map.txt`) must come from the same
+  `prepare_data` run as that training data, for example
+  `data/p52/vocab_map.txt` for the P5.2 run. Only its size is checked.
+- **Sampling:** `--greedy 1`, or `--temperature T` with optional
+  `--top_k K`, and `--seed`. Output stops at end-of-story or after
+  `--max_new` tokens. `<unk>` is never generated unless `--allow_unk 1`.
+- **Output:** the prompt followed by the continuation. Same options and seed
+  give the same text. The tiny smoke model produces word salad; readable
+  stories need the `small` run.
+
+## Prompt evaluation
+
+```bash
+bin/eval --ckpt runs/smoke/ckpt_latest.bin        # writes runs/smoke/samples_200.txt
+```
+
+- **Prompts:** the 10 fixed prompts in `eval/prompts.txt` (story openers,
+  factual, reasoning, consistency).
+- **Output:** for each prompt, one greedy completion and one at temperature
+  0.8 with seed 1337 (at most 120 tokens). They go to
+  `samples_<step>.txt` next to the checkpoint (`--out` to change it).
+- **Comparability:** the settings are fixed and the file layout is fixed
+  (`include/tslm/samples.h`), so files from different runs and builds
+  compare line by line. The same binary and checkpoint reproduce the file
+  byte for byte.
+- **Vocab map:** `--vocab_map` follows the same rule as for `generate`.
+- **Scoring:** completions are scored by hand, 0–5 on grammar, consistency
+  and sense, following [`eval/RUBRIC.md`](eval/RUBRIC.md). Scores go in
+  `eval/scores.csv`.
+
+## Benchmarks
+
+```bash
+scripts/bench.sh W-C        # smoke, 200 steps, 3 runs -> bench/serial_W-C.csv
+scripts/bench.sh W-A        # small, 50 steps, B=32, 3 runs (about 10 min serial) -> bench/serial_W-A.csv
+```
+
+- **What a run does:** `bin/bench` runs one fixed workload (ROADMAP §12)
+  with the real training step and appends one CSV row.
+  - **Row contents:** median and mean step time, tokens/s, the per-phase
+    means, peak memory, machine id and git hash.
+  - **Warmup:** the first 3 steps are discarded.
+  - **Prewarm:** the training token file is read once first, so a cold
+    page cache does not distort the data time.
+- **Manifest:** `bench/<version>_<workload>.manifest.txt` records the
+  build, flags, machine and config of the latest run.
+- **Conditions:** run benchmarks on an idle machine, from a clean release
+  build (`make clean && make`).
+
+### Profiling (developers)
+
+```bash
+scripts/profile.sh          # gprof flat profile of the W-A step (13 steps, ~1 min) -> docs/profile/serial_W-A_gprof.txt
+```
+
+It builds `make MODE=profile` (the release flags plus `-pg`, in
+`bin/profile-float/`; never used by `make test` or `make dist`). The
+analysis is in [`docs/PROFILE.md`](docs/PROFILE.md).
+
 ## Long runs
 
 Real training runs and their results are recorded in
@@ -143,13 +344,10 @@ Tests compare against small reference files committed in `tests/golden/`;
 see [`tests/golden/README.md`](tests/golden/README.md). They are regenerated
 offline only when a model definition legitimately changes:
 
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r dev_only/requirements.txt
-bin/dump_init --out tests/golden/tiny_init.bin ...            # full commands in tests/golden/README.md
-.venv/bin/python dev_only/gen_golden.py tests/golden/tiny_init.bin tests/golden/tiny_fwd.bin
-```
-
-The PyPI `torch` wheel for Linux also installs about 2.5 GB of CUDA libraries.
+The exact commands (a Python virtual environment with
+`dev_only/requirements.txt`, then `bin/dump_init` and
+`dev_only/gen_golden.py`) are in that file. The PyPI `torch` wheel for Linux
+also installs about 2.5 GB of CUDA libraries.
 
 ## Layout
 
@@ -158,7 +356,9 @@ include/tslm/   public headers (ops.h, model.h, layout.h, backend.h, comm.h, ...
 src/            library: common/ backend/ comm/ ops/ model/ optim/ data/ train/
 apps/           command-line tools (thin main()s)
 tests/          unit tests (test_*.cpp), golden data, and a 208 KB real-data fixture (tests/fixtures/)
-configs/        presets       scripts/  data download
-docs/           DECISIONS.md (design decision log), PROFILE.md (serial optimizations)
-dev_only/       offline Python for golden files; never built or shipped
+configs/        presets       scripts/  data download, bench.sh, profile.sh
+eval/           fixed prompts, scoring rubric and scores template       bench/  committed benchmark CSVs
+docs/           DECISIONS.md (decision log), PROFILE.md (optimizations + profile), RUNS.md (long runs),
+                HANDOFF.md (what CUDA/MPI kernels must preserve, memory per preset), STATUS.md
+dev_only/       offline Python (golden files, fixture cutting, loss plots); never built or shipped
 ```

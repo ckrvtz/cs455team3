@@ -1,0 +1,4 @@
+version,preset,global_batch,T,steps,ranks,median_step_ms,mean_step_ms,tok_per_s,data_ms,fwd_ms,bwd_ms,comm_ms,opt_ms,peak_mem_MB,machine_id,git_hash
+serial,small,32,256,50,1,3640.001,3651.340,2250.5,0.131,1403.835,2239.581,0.000,7.789,2023.8,Intel(R) Xeon(R) Processor @ 2.30GHz | 4 cores | 16 GB,e777b9f33cc2
+serial,small,32,256,50,1,3623.407,3618.429,2260.9,0.134,1413.687,2197.038,0.000,7.568,2023.8,Intel(R) Xeon(R) Processor @ 2.30GHz | 4 cores | 16 GB,e777b9f33cc2
+serial,small,32,256,50,1,3567.132,3559.991,2296.5,0.121,1396.115,2156.248,0.000,7.505,2023.8,Intel(R) Xeon(R) Processor @ 2.30GHz | 4 cores | 16 GB,e777b9f33cc2

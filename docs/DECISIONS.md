@@ -928,3 +928,476 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **Impact:** none on code or formats. The `small` preset is also benchmark
   workload W-A, which uses fixed step counts, so `max_steps` there is
   overridden.
+
+## 2026-11-18: Generation app and sampling rules (P6.1)
+
+- **Library:** `include/tslm/generate.h`, `src/train/generate.cpp`.
+  - `sample_token` is host-side (§4.8). Its rules:
+    - `<unk>` is excluded unless `--allow_unk 1`, since it decodes to no
+      text.
+    - Greedy takes the argmax, with ties going to the lowest id.
+    - Otherwise: top-k (ties ranked by lower id), then
+      softmax(logit / temperature) in double, accumulated in id order, and
+      one `Rng::uniform()` draw.
+  - `generate_ids` runs `model_forward` with B = 1 over a sliding window of
+    the last `max_seq_len` tokens (no KV cache, a Phase A non-goal). It
+    copies the last row of logits to the host and stops at EOS (not
+    returned) or `max_new`.
+  - Randomness uses only `Rng(seed, SAMPLING_STREAM = 1000000)`, a stream
+    separate from init (0..#tensors) and data order (100 + epoch), so a run
+    with the same options and seed is reproducible.
+- **App:** `apps/generate.cpp`.
+  - The model shape comes from the checkpoint header.
+  - The prompt is encoded by our BPE, mapped to vocab ids (unknown → `<unk>`
+    with a warning) and prefixed with EOS, which precedes every story in the
+    training stream.
+  - Output is the prompt plus the decoded continuation.
+- **Known gap:** nothing ties a checkpoint to its `vocab_map.txt`; only the
+  size is checked. A mismatched map would decode wrong words silently. A
+  real fix (a vocab hash in the checkpoint or manifest) would be a format
+  change and needs the contract process. For now it is documented in the
+  app header and README.
+- **DoD status:**
+  - **Reproducible greedy output:** met and tested. Two runs give identical
+    tokens, and each token equals the argmax of a direct forward over the
+    window, including a context longer than `max_seq_len`.
+  - **Grammatical continuations on `small`:** pending the P5.2 checkpoint.
+    The smoke model (333k params, 200 steps) yields word salad, as
+    expected.
+- **Measured** (`tests/test_generate.cpp`): sampled frequencies over 200k
+  draws match softmax(l/0.7) within 5 standard errors.
+- **Mutation evidence:** the tests failed on each of four planted bugs:
+  - a window over the first tokens instead of the last;
+  - greedy ties going to the higher id;
+  - temperature multiplied instead of divided;
+  - EOS returned.
+
+## 2026-11-18: Correction: release-float numbers recorded from a stale build (P4.5, P5.1)
+
+- **What happened:**
+  - Between P4.4 and P5.1, the incremental release-float build linked an
+    object file that did not match its committed source.
+  - The most likely cause: one of the mutation checks (plant a bug, build,
+    restore the file with `cp`) left an object compiled from a mutated
+    variant that `make` did not rebuild.
+  - Its numerics differed from a fresh build only in the last bits. It
+    passed every tolerance-based test (gradcheck, golden, smoke criteria),
+    so nothing flagged it.
+  - It disappeared in P5.1, when a mutation check forced
+    `src/ops/attention_cpu.cpp` to recompile. That is consistent with the
+    stale object being `attention_cpu.o`, but this was not proven.
+- **Evidence (2026-11-18):**
+  - The P4.5 commit (`a9e214c`) built from scratch in a separate worktree
+    gives the same smoke result as today's build: train 6.1013, val 5.6889.
+    The training code has not changed since P4.4, and the current binary
+    reproduces itself byte for byte.
+  - A from-scratch `build/release-cpu-serial-float` gives the values in the
+    table below.
+  - The lr 1e-3 smoke numbers recorded in P4.2–P4.4 (train 6.2963, val
+    6.1346) reproduce exactly. The difference only shows at lr 1e-2, where
+    small rounding differences are amplified over 200 steps.
+- **Corrected values** (release float; every other recorded number was
+  checked and still holds):
+
+  | Record | Recorded | From a clean build |
+  |---|---|---|
+  | P4.5: `train_serial --config configs/smoke.cfg` on full `data/`, step 200 | train 6.0728, val 5.7001 | train 6.1013, val 5.6889 |
+  | P4.5: `test_smoke` val at step 200 (fixture) | 5.7444 | 5.7445 (steps 50/100/150 unchanged: 6.2771 / 6.0214 / 5.7996) |
+  | P5.1: first `test_signoff` final-params FNV-1a | `3a787b8b4853b93d` (already marked unusable) | `0d80323551e3bb51` (as recorded later in P5.1) |
+
+  - All §10 criteria still pass with the same margins.
+  - Unaffected and re-verified from scratch builds today:
+    - double: smoke val 5.7434, overfit 0.0002, FNV `a212a0f0162c37b2`;
+    - debug: FNV `3f1add97f2972ba6`;
+    - release overfit: 0.0002.
+  - `docs/STATUS.md` quotes "val loss 5.70" for the full-data smoke run. It
+    will read 5.69 at its next requested update; STATUS is updated only on
+    request.
+- **Procedure from now on:**
+  1. After a mutation check, restore the file and then `touch` it, so
+     `make` always recompiles the restored source.
+  2. Before recording any number in DECISIONS, RUNS or a CSV, rebuild the
+     configuration that produced it from scratch (`rm -rf build/<tag>`, or
+     `make clean`), and record the number from that build.
+- **Impact:** no code change. The earlier entries stay as written
+  (append-only log); this entry supersedes their affected numbers.
+
+## 2026-11-18: Fixed prompt set, eval app and samples file layout (P6.2)
+
+- **`eval/prompts.txt`:** 10 prompts written for this project in the style
+  of the TinyStories paper examples (none copied):
+  - 3 story openers;
+  - 3 factual (fridge, night sky, rain);
+  - 2 reasoning (counting, melting);
+  - 2 consistency (who has which ball; dad helping with a stuck kite).
+
+  The format is `<id> TAB <category> TAB <text>` with `#` comments, chosen
+  so the text can contain quotes and commas. The file is frozen: its
+  FNV-1a 64 is written into every samples file.
+- **`bin/eval`:** for every prompt, one greedy and one temperature-0.8
+  completion with seed 1337, at most 120 tokens, stopping at EOS.
+  - These settings are compile-time constants, not options, so every run
+    and build uses the same ones (the DoD's "stable across versions").
+  - Output goes to `samples_<step>.txt` next to the checkpoint (§9 run
+    outputs).
+- **Layout:** fixed by `include/tslm/samples.h` and pinned by an exact
+  expected string in `tests/test_samples.cpp`.
+  - A 6-line `#` header: format version, checkpoint and step, model, build,
+    prompts path/count/hash, settings.
+  - Then per prompt a `=== prompt <id> [<category>] ===` block with greedy
+    and sampled sections, each showing the prompt plus continuation.
+  - There is no date or timing, so the file is byte-reproducible; the
+    smoke checkpoint gave identical files on two runs.
+  - Changes to the layout go through the contract process.
+- **Shared code:** prompt encoding and decoding moved from
+  `apps/generate.cpp` into `TextCodec` (`include/tslm/text_codec.h`) so
+  `generate` and `eval` encode prompts identically. `generate` output is
+  unchanged (checked on the smoke checkpoint).
+- **Not yet meaningful:** the content of the completions. It needs the P5.2
+  `small` checkpoint, since the smoke model produces newlines and word
+  salad. Scoring is P6.3.
+- **Mutation evidence:** the tests failed on each of two planted bugs: a
+  dropped prompt-id ordering check, and a dropped "stopped at EOS" marker.
+
+## 2026-11-18: Scoring template and rubric (P6.3); pilot pending
+
+- **Change:**
+  - **`eval/scores.csv`:** a header-only template with the §6 P6.3 columns,
+    `milestone,prompt_id,grammar,consistency,sense,rater,notes`. The header
+    is pinned by `tests/test_samples.cpp` (D6: format stays stable).
+  - **`eval/RUBRIC.md`:**
+    - anchored 0–5 scales for grammar, consistency and sense;
+    - scoring rules and illustrative examples (written for the rubric, not
+      model output);
+    - a milestone naming convention (`<version>-<preset>-step<step>`);
+    - a pilot procedure.
+- **Which completion is scored:** the temperature-0.8 one. The CSV has no
+  greedy/sampled column, and the specified format was kept rather than
+  extended. Greedy completions of small models tend to loop, which would
+  mostly measure the decoding rule; they remain in the samples files for
+  build comparisons.
+- **Pilot criterion:** the DoD says "agree within ±1". It is made concrete
+  as: at least 27 of the 30 score pairs (10 prompts × 3 dimensions) differ
+  by ≤ 1, and none by more than 2. On failure, the raters refine the
+  anchors and re-pilot on a different samples file.
+- **DoD status: pending.** The pilot needs two human raters and samples from
+  a trained checkpoint (the P5.2 `small` run, still to be executed). No
+  scores have been entered, and none were produced by the assistant.
+
+## 2026-11-18: Bench app, prewarm rule and first serial benchmarks (P7.1)
+
+- **What is timed:** `bin/bench` times exactly the training step.
+  `train_step()` was extracted from `train_run` and is shared by both.
+  This was verified behaviour-preserving: identical smoke values and
+  final-params checksum `0d80323551e3bb51`.
+- **Per run:**
+  - prewarm the training token file;
+  - fresh model from the seed;
+  - `max_steps` steps, the first 3 discarded;
+  - one CSV row in the frozen §12 columns.
+- **Definitions:**
+  - `steps` = total steps run (warmup included). All versions use the same
+    definition, so speedups compare like with like.
+  - `median_step_ms` / `mean_step_ms` are taken over the measured steps.
+  - `tok_per_s` = global tokens per step / median step.
+  - Phase columns are per-step means over the measured steps.
+  - `peak_mem_MB` = process peak RSS (`ru_maxrss`).
+  - `machine_id` = "CPU model | cores | RAM", with commas replaced.
+- **Prewarm adopted** (the ROADMAP P7.1 proposal): a §12 line was added
+  saying every version reads the whole token file once before the first
+  step. The read is recorded in `bench/<version>_<workload>.manifest.txt`.
+- **Results** (`bench/serial_W-C.csv`, `bench/serial_W-A.csv`):
+  - Conditions: clean release build of commit `e777b9f` on this container
+    (Intel Xeon @ 2.30GHz, 4 cores, 16 GB); 3 runs each.
+
+  | Workload | median_step_ms per run | max deviation from mean | range | tok/s |
+  |---|---|---|---|---|
+  | W-C (smoke, 200 steps, B=4, T=32) | 19.851 / 20.287 / 20.078 | 1.10% | 2.20% | 6309–6448 |
+  | W-A (small, 50 steps, B=32, T=256) | 3640.001 / 3623.407 / 3567.132 | 1.19% | 2.04% | 2251–2297 |
+
+  - DoD "reproducible within ±3% across 3 runs" is met for both.
+  - W-A per-step phase means: forward about 1.40 s, backward 2.16–2.24 s,
+    optimizer about 7.6 ms, data about 0.13 ms.
+  - The serial attention computes only the causal lower triangle (see
+    `docs/PROFILE.md`), so a version that computes the full tile does about
+    2× the attention arithmetic. Comparisons must say which it uses.
+  - W-B (base) was not run; the §14 gate requires only W-A and W-C.
+- **Host note:** this container moved between CPUs during the session. It
+  was "Xeon @ 2.10GHz" until about 05:30 UTC and "Xeon @ 2.30GHz with
+  AVX-512" from about 12:00 UTC. These benchmarks are on the 2.30GHz host
+  only, from a build compiled there.
+
+## 2026-11-18: Update to the stale-build correction: likely cause was a CPU change; Makefile target stamp
+
+- **Revised cause** of the release-float discrepancy in "Correction:
+  release-float numbers recorded from a stale build":
+  - The cause recorded there (an object left over from a mutation check) is
+    probably wrong.
+  - The container moved between hosts during the session: "Intel Xeon @
+    2.10GHz" in every manifest up to 05:30 UTC, then "Intel Xeon @ 2.30GHz"
+    with AVX-512 (`-march=native` defines `__AVX512F__`,
+    `__tune_graniterapids__`) from about 12:00 UTC.
+  - The release objects had been compiled on the first host, and `make` kept
+    reusing them on the second, because nothing in the build depended on the
+    CPU.
+  - P5.1's first test binary (checksum `3a787b8b4853b93d`) ran with those
+    objects. The checksum became `0d80323551e3bb51` exactly when a mutation
+    check forced `attention_cpu.o` to recompile on the new host.
+  - The P4.5 values (5.7444; 6.0728 / 5.7001) were produced with
+    first-host objects as well.
+  - This fits the timeline better than a mutation leftover. Neither cause
+    can now be proven, because the first host is gone.
+  - The corrected numbers in that entry stand: they come from clean builds
+    on the current host.
+- **What it means:** with `-march=native`, results are bit-reproducible per
+  binary, and per (compiler, flags, CPU) build. They are not guaranteed
+  across CPUs. Recorded numbers must name the machine; bench rows and
+  manifests already do.
+- **Makefile change:** a code-generation target stamp.
+  - `TARGET_ID` is a checksum of `$(CXX) $(CXXFLAGS) -dM -E` (the
+    compiler's predefined macros under the actual flags, which include the
+    ISA and tuning macros that `-march=native` selects). It is kept in
+    `build/<tag>/target.stamp` and rewritten only when it changes.
+  - Every object depends on the stamp, so a different CPU, compiler or flag
+    set rebuilds everything.
+  - Verified: an unchanged host gives a no-op rebuild; overwriting the stamp
+    (a simulated CPU change) recompiled all 39 library and app objects; a
+    second run was again a no-op.
+  - This needs only the compiler, no `/proc/cpuinfo`, so it works on Linux
+    and macOS hosts alike.
+- **`docs/RUNS.md`:** the P5.2 pilot's 3.8 s/step was measured on the
+  2.30GHz AVX-512 host (it ran at 12:16 UTC), not the 2.10GHz one. The
+  machine description there was corrected.
+- **Procedure:** the two rules from the correction entry still hold (touch
+  after restoring a mutated file; clean rebuild before recording numbers).
+  The stamp is an additional safeguard, not a replacement.
+
+## 2026-11-18: README completed and verified from a clean clone (P7.3)
+
+- **Change:** `README.md` gained:
+  - a quick start (clone to evaluated smoke model);
+  - three reproduction recipes (smoke run, the P5.2 `small` run,
+    benchmarks);
+  - the reference-machine table;
+  - a verification note.
+
+  The golden-data section now points to `tests/golden/README.md` for the
+  regeneration commands instead of listing an abbreviated, non-runnable
+  `...` command.
+- **Verification method:** a script ran every README command in README order
+  in a fresh `git clone https://github.com/ckrvtz/cs455team3.git`, on the
+  reference machine (Xeon @ 2.30GHz AVX-512, 4 cores, 16 GB, Ubuntu 24.04.5,
+  g++ 13.3.0, GNU Make 4.3).
+  - The clone needed one extra step that is not in the README,
+    `git checkout claude/wizardly-einstein-0ilutz`, because the work is not
+    yet merged to the default branch.
+  - The two `small`-run training commands were run until they proved
+    themselves: the first to its step-250 checkpoint, the resume to step
+    260. Then they were stopped.
+- **Log** (status, seconds, command):
+
+```
+  OK 1s :: git clone https://github.com/ckrvtz/cs455team3.git
+  OK 0s :: git checkout claude/wizardly-einstein-0ilutz
+  OK 16s :: make
+  OK 47s :: make test
+  OK 31s :: scripts/download_data.sh
+  OK 35s :: bin/prepare_data
+  OK 6s :: bin/train_serial --config configs/smoke.cfg
+  OK 0s :: bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --temperature 0.8 --top_k 50 --seed 7
+  OK 2s :: bin/eval --ckpt runs/smoke/ckpt_latest.bin
+  OK 147s :: make debug
+  OK 70s :: make test REAL=double
+  OK 0s :: make dist
+  OK 4s :: make REAL=double
+  OK 0s :: bin/release-double/gradcheck
+  OK 0s :: bin/release-double/gradcheck --tie_embeddings 0
+  OK 0s :: bin/inspect_data --n 3
+  OK 2s :: bin/train_serial --config configs/smoke.cfg --max_steps 50 --run_name try1
+  OK 6s :: bin/train_serial --config configs/smoke.cfg --ckpt_every 100
+  OK 3s :: bin/train_serial --config configs/smoke.cfg --ckpt_every 100 --resume runs/smoke/ckpt_100.bin
+  OK 1s :: bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --greedy 1 --max_new 40
+  OK 0s :: bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --temperature 0.8 --top_k 50 --seed 7
+  OK 2s :: bin/eval --ckpt runs/smoke/ckpt_latest.bin
+  OK 0s :: mkdir -p data/p52
+  OK 2s :: bin/prepare_data --max_tokens 20000000 --out_dir data/p52
+  OK(stopped after: checkpoint runs/small_p52/ckpt_250.bin (+ ckpt_latest.bin), 74 ms) 1006s :: bin/train_serial --config configs/small.cfg --train_data data/p52/train.bin --val_data data/p52/val.bin --run_name small_p52
+  OK(stopped after: step    260/2400 | loss 4.0684 | lr 9.983e-04 | gnorm 0.979 | 3696.8 m) 40s :: bin/train_serial --config configs/small.cfg --train_data data/p52/train.bin --val_data data/p52/val.bin --run_name small_p52 --resume runs/small_p52/ckpt_latest.bin
+  OK 0s :: python3 dev_only/plot_log.py runs/small_p52/curves.svg runs/small_p52/log.csv
+  OK 16s :: bin/eval --ckpt runs/small_p52/ckpt_latest.bin --vocab_map data/p52/vocab_map.txt
+  OK 18s :: make clean && make
+  OK 13s :: scripts/bench.sh W-C
+  OK 557s :: scripts/bench.sh W-A
+  FAIL(141) 63s :: scripts/profile.sh
+  OK 0s :: python3 dev_only/plot_log.py curves.svg runs/small_p52/log.csv
+  TOTAL 2088s
+```
+
+- **Results:**
+  - 32 of 33 commands passed. The one failure was `scripts/profile.sh`,
+    exit 141 (SIGPIPE): gprof was piped into `head -45` under
+    `set -o pipefail`. It had passed in the working copy only because
+    gprof's output happened to fit in the pipe buffer.
+  - Fix: the script uses `sed -n '1,45p'`, which reads all input. It passed
+    twice in the clone afterwards. Its numbers agree with the committed
+    profile within run-to-run noise (matmul backward 55.6% vs 56.9%), so the
+    committed profile and `docs/PROFILE.md` were not regenerated.
+  - Quick start: 138 s of machine time.
+- **Observed on the way** (an early indication, not a P5.2 result): at step
+  200 of the `small` run, val loss was 4.2254. The step-250 samples were
+  TinyStories-like fragments; greedy decoding looped ("I'm sorry, ..."), as
+  RUBRIC.md anticipates.
+- **DoD:** every README command was verified in that run, and a teammate's
+  attended time is the quick start plus starting the unattended jobs. The
+  "under 30 min" part is a statement about a person's time, so it can only
+  be confirmed by a teammate repeating it.
+
+## 2026-11-18: CUDA/MPI hand-off notes (P7.4)
+
+- **`docs/HANDOFF.md`:** one paragraph for each of the 18 `ops.h` functions
+  (checked mechanically against the header). Each covers shapes and layout,
+  overwrite vs accumulate, the special cases the serial tests rely on, and
+  a tolerance against serial. The special cases include:
+  - repeated-token accumulation;
+  - the tied-`wte` gradient that must never be overwritten;
+  - the exact-zero causal upper triangle of `att`;
+  - the key-bias structural zero;
+  - the stable GELU form;
+  - double reductions for the loss and the clip norm;
+  - AdamW bias corrections computed once in double.
+- **Tolerances:** the per-op tolerances are marked PROPOSED (serial accuracy
+  plus room for reordered float sums), for Phase B to confirm or revise.
+  The binding criteria remain the ROADMAP §10 cross-version protocol and the
+  unchanged serial test suite.
+- **Memory per preset:** for both head variants, computed with
+  `make_param_layout` / `make_act_layout` (float):
+  - `small` B=32, T=256: 1,267.9 MB tied;
+  - `base`: 2,050.4 MB tied;
+  - `smoke`: 20.3 MB tied.
+
+  Logits, probs and d_logits are 312.5 MB each for `small` and `base`.
+- **Not a contract change:** `ops.h` is unchanged; this document describes
+  it.
+
+## 2026-11-18: CUDA and MPI build stubs (P7.5)
+
+- **Change:**
+  - **`src/ops/ops_cuda.cu`:** an `#error` stub listing every `ops.h`
+    function Phase B must implement, and the backend file it also needs.
+  - **`src/comm/comm_mpi.cpp`:** an `#error` stub with the MPI mapping of
+    each `comm.h` call.
+
+  In both, the `#error` comes before any include, so a missing CUDA or MPI
+  installation is never what gets reported.
+- **Makefile:**
+  - `NVCC ?= nvcc` and `MPICXX ?= mpicxx`.
+  - `BACKEND=cuda` adds `src/*/*_cuda.cu` to the library, compiled by
+    `$(NVCC)` with the -D/-I flags (not g++'s `-MMD`/`-march`/warning
+    flags).
+  - `COMM=mpi` compiles everything with `$(MPICXX)`.
+  - If the tool is not on PATH, make stops before compiling, with one
+    message naming the tool, how to point at it, and the stub to read.
+    `clean` and `dist` still work.
+- **Verified here** (no CUDA or MPI installed):
+  - `make BACKEND=cuda`, `make COMM=mpi` and both together stop with the
+    toolchain message.
+  - With stand-in tools (`MPICXX=g++`; an `nvcc` wrapper running
+    `g++ -x c++`), the build stops at the existing `build_config.h` guards
+    ("not supported yet (Phase B/C)").
+  - Compiling the stubs alone through the real rules, including the new
+    `.cu` rule, stops at each stub's own `#error`.
+  - Default builds never reference the stubs.
+- **Kept:** the `build_config.h` guards stay until each phase lands. Each
+  phase removes its own guard and replaces its stub.
+
+## 2026-11-18: P5.2 `small` run results; cross-machine bit-identity (evidence on the stale-build cause)
+
+- **Run:** executed by a teammate on an Intel Core i7-6820HQ (AVX2) with
+  g++ 16.2.1. `log.csv` and `manifest.txt` are committed in
+  `docs/runs/small_p52/`, with `curves.svg`. Details and tables are in
+  `docs/RUNS.md`.
+- **Results:**
+  - final val loss 2.6455 (ppl 14.1) after 2,400 steps (19.66M tokens);
+  - val decreased at every one of the 24 evaluations;
+  - no non-finite values.
+- **Plateau criterion** (fixed before the run): criteria 1 and 3 met;
+  criterion 2 (train − val gap within ±0.1) **not met**, +0.106.
+  - The gap is val below train, and its train side is a mean of only 10
+    logged single-step losses. Both facts are recorded but do not change
+    the result.
+  - **The P5.2 DoD ("a loss plateau you can defend") is left to the team.**
+    Options:
+    - accept it with the caveat above;
+    - measure train loss properly with `evaluate()` on fixed training
+      batches from the final checkpoint;
+    - run longer on more data (P5.2 allows up to 50M tokens).
+- **Cross-machine bit-identity:** the 108 logged values for steps 1–260
+  (train loss, val loss, lr, grad norm) are identical, to all printed
+  digits, to the clean-clone verification run of P7.3. That run used a Xeon
+  @ 2.30GHz with AVX-512 and g++ 13.3.0, from a from-scratch build.
+- **Consequence for "Update to the stale-build correction":** that entry
+  attributed the release-float discrepancy to object files compiled for a
+  previous CPU. The bit-identity above shows that this code gives the same
+  results across a different CPU generation, ISA width (AVX2 vs AVX-512) and
+  compiler major version. That makes the CPU-change explanation much less
+  likely.
+  - The earlier explanation, an object left over from a mutation check (see
+    "Correction: release-float numbers recorded from a stale build"), is
+    again the more plausible one.
+  - Neither can be proven now. The corrected numbers and both safeguards
+    still stand: the clean-rebuild procedure, and the target stamp, which
+    still prevents mixing objects from different compilers or flags.
+
+## 2026-11-18: P5.2 supplementary gap measurement; P6.1 generation check; samples for the P6.3 pilot
+
+- **Supplementary measurement** (chosen by the team after criterion 2
+  missed; method fixed before computing):
+  - **Tool:** a new `bin/eval_loss` (a thin app around the tested
+    `evaluate()`), which reproduced the run's final val_loss exactly
+    (2.64546051) from the returned checkpoint on this machine.
+  - **Result:** final model on the first 20 train batches = 2.8296. Gap to
+    final val = +0.184 > 0.1: **not met**.
+- **Diagnostic** (after the miss, recorded as such): on 100 batches each,
+  train 2.7815 vs val 2.7668 (gap +0.015). The fixed 20-batch validation
+  slice is about 0.12 easier than the broader validation set, so the
+  criterion-2 gap is a property of that slice, not of the model.
+- **Recommendation to the team:**
+  - Accept the plateau with this evidence, rather than start a longer run
+    (which would lower train loss and is unlikely to close a val-below-train
+    gap).
+  - If the criterion is used again, define it on more batches, or on
+    `evaluate()` of fixed train and val batches of equal size.
+  - Verdict pending.
+- **P6.1:** greedy generation from the final checkpoint is byte-identical
+  across runs, and the continuations are mostly grammatical TinyStories-style
+  text (`docs/RUNS.md`). Both DoD points are met.
+- **P6.2/P6.3:** `docs/runs/small_p52/samples_2400.txt` is the pilot set
+  (11 KB, byte-identical on rerun). The pilot itself needs two human raters.
+- **Checkpoint:** `runs/small_p52/ckpt_latest.bin` (20.5 MB) stays
+  gitignored.
+
+## 2026-11-18: P5.2 verdict: plateau accepted (team decision)
+
+- **Decision:** the team accepts the P5.2 `small` run as a defensible loss
+  plateau. P5.2 is done.
+- **Basis** (all recorded in `docs/RUNS.md` and the two preceding entries):
+  - The final val loss is 2.6455 (ppl 14.1), inside the 2–3 range ROADMAP
+    §10 expects for truncated serial runs. Val decreased at every one of the
+    24 evaluations.
+  - Plateau criteria 1 (val drop < 0.05 over the last 500 steps: 0.0479)
+    and 3 (no NaN, no val increase > 0.02) were met.
+  - Criterion 2 (train/val gap within ±0.1) was not met: +0.106 as
+    originally defined, and +0.184 with the pre-specified supplementary
+    measurement on 20 fixed training batches. On 100 batches of each file
+    the gap is +0.015. The miss comes from the fixed 20-batch validation
+    slice being about 0.12 easier than the broader validation set; it is not
+    a train/val difference in the model. A longer run would not address it.
+  - The misses stay on the record; they are not reinterpreted as passes.
+- **Follow-up for future plateau checks:** define the gap on `evaluate()` of
+  equal-sized fixed train and val sets of at least 100 batches each (e.g.
+  `bin/eval_loss --batches 100`). Do not use the mean of logged single-step
+  losses against the 20-batch validation slice.
+- **Status of related tasks:**
+  - P6.1 is done (see the previous entry).
+  - The P6.3 two-rater pilot is still pending (`docs/runs/small_p52/samples_2400.txt`).
+  - P5.3 (Serial Complete review) can proceed once the pilot is recorded.

@@ -41,6 +41,50 @@ void write_text_file(const std::string& path, const std::string& text) {
 
 }  // namespace
 
+StepResult train_step(Model* model, DataLoader* loader, const TrainConfig& tc, int step, const StepBuffers& buf,
+                      PhaseTimer* timer) {
+    const int B = loader->batch_size(), T = loader->seq_len(), world = comm_size();
+    const size_t ntok = size_t(B) * size_t(T);
+    const double t0 = now_seconds();
+
+    timer->begin(Phase::Data);
+    loader->next_batch(buf.x_host, buf.y_host);
+    copy_h2d(buf.x_dev, buf.x_host, ntok * sizeof(int32_t));
+    copy_h2d(buf.y_dev, buf.y_host, ntok * sizeof(int32_t));
+    timer->end(Phase::Data);
+
+    timer->begin(Phase::Bwd);  // grad zeroing is charged to bwd (DECISIONS 2026-11-18)
+    dev_memset(model->grads, 0, model_param_bytes(model));
+    timer->end(Phase::Bwd);
+
+    timer->begin(Phase::Fwd);
+    double loss = model_forward(model, buf.x_dev, buf.y_dev, B, T);
+    timer->end(Phase::Fwd);
+
+    timer->begin(Phase::Bwd);
+    model_backward(model);
+    timer->end(Phase::Bwd);
+
+    timer->begin(Phase::Comm);
+    comm_allreduce_avg(model->grads, model->params_layout.num_params_padded);
+    comm_allreduce_sum_double(&loss, 1);
+    loss /= world;
+    timer->end(Phase::Comm);
+    check_step_finite(step, loss, 0.0);
+
+    StepResult r;
+    timer->begin(Phase::Opt);
+    r.lr = lr_at(tc, step);
+    r.grad_norm = clip_grad_norm(model, tc.grad_clip);
+    adamw_update(model, tc, step, r.lr);
+    timer->end(Phase::Opt);
+    check_step_finite(step, loss, r.grad_norm);
+
+    r.loss = loss;
+    r.step_ms = (now_seconds() - t0) * 1e3;
+    return r;
+}
+
 TrainSummary train_run(const Config& cfg) {
     std::string err;
     CHECK(config_validate(cfg, &err), "%s", err.c_str());
@@ -93,7 +137,7 @@ TrainSummary train_run(const Config& cfg) {
     std::vector<int32_t> x_host(ntok), y_host(ntok);
     int32_t* x_dev = static_cast<int32_t*>(dev_malloc(ntok * sizeof(int32_t)));
     int32_t* y_dev = static_cast<int32_t*>(dev_malloc(ntok * sizeof(int32_t)));
-    const size_t grad_bytes = model_param_bytes(model);
+    const StepBuffers buf{x_host.data(), y_host.data(), x_dev, y_dev};
 
     const std::string dir = run_dir(cfg);
     CsvLog csv;
@@ -135,41 +179,8 @@ TrainSummary train_run(const Config& cfg) {
 
     sum.start_step = start_step;
     for (int step = start_step; step <= tc.max_steps; ++step) {
-        const double t0 = now_seconds();
-
-        timer.begin(Phase::Data);
-        loader.next_batch(x_host.data(), y_host.data());
-        copy_h2d(x_dev, x_host.data(), ntok * sizeof(int32_t));
-        copy_h2d(y_dev, y_host.data(), ntok * sizeof(int32_t));
-        timer.end(Phase::Data);
-
-        timer.begin(Phase::Bwd);  // grad zeroing is charged to bwd (DECISIONS 2026-11-18)
-        dev_memset(model->grads, 0, grad_bytes);
-        timer.end(Phase::Bwd);
-
-        timer.begin(Phase::Fwd);
-        double loss = model_forward(model, x_dev, y_dev, B, T);
-        timer.end(Phase::Fwd);
-
-        timer.begin(Phase::Bwd);
-        model_backward(model);
-        timer.end(Phase::Bwd);
-
-        timer.begin(Phase::Comm);
-        comm_allreduce_avg(model->grads, model->params_layout.num_params_padded);
-        comm_allreduce_sum_double(&loss, 1);
-        loss /= world;
-        timer.end(Phase::Comm);
-        check_step_finite(step, loss, 0.0);
-
-        timer.begin(Phase::Opt);
-        const double lr = lr_at(tc, step);
-        const double gnorm = clip_grad_norm(model, tc.grad_clip);
-        adamw_update(model, tc, step, lr);
-        timer.end(Phase::Opt);
-        check_step_finite(step, loss, gnorm);
-
-        const double step_ms = (now_seconds() - t0) * 1e3;
+        const StepResult sr = train_step(model, &loader, tc, step, buf, &timer);
+        const double loss = sr.loss, lr = sr.lr, gnorm = sr.grad_norm, step_ms = sr.step_ms;
         interval_ms += step_ms;
         ++interval_steps;
         sum.steps = step;

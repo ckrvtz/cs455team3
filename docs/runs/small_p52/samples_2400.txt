@@ -1,0 +1,115 @@
+# tslm samples v1
+# checkpoint: runs/small_p52/ckpt_latest.bin | step 2400
+# model: L=2 C=128 NH=4 V=10000 max_T=256 tied=1 | params 1709568 (padded 1709568) | params/grads/m/v 6.5 MB each | activation arena 38.8 MB for B=1 T=256 | device cpu
+# build: backend=cpu comm=serial real=float mode=release
+# prompts: eval/prompts.txt | 10 prompts | fnv1a64 51700c15ae06f2f6
+# settings: max_new 120 | greedy | temperature 0.8 seed 1337
+=== prompt 1 [story] ===
+Once upon a time, there was a little dog named Max. Max loved to
+--- greedy (120 tokens) ---
+Once upon a time, there was a little dog named Max. Max loved to play outside in the park. One day, Max saw a big tree with a big tree. He wanted to play with it, but he was too fast.
+Max was very sad. He wanted to play with his ball, but he didn't want to play with it. He tried to catch it, but he was too fast. Max was sad and didn't know what to do.
+Max was sad and didn't know what to do. He wanted to play with his ball and play with. He said, "No, Max, you can't play with me." Max was sad
+--- temperature 0.8 seed 1337 (120 tokens) ---
+Once upon a time, there was a little dog named Max. Max loved to play with his toys in the park. He would go in the park with his favorite thing he was.
+One day, Max was playing with his toy car. His mom said, "What are you going to play in the box?" Max asked. "I have a surprise for you?"
+Max said, "No, it's my toy. It can play with you?" Max thought for a moment and said, "No, it's mine!"
+Max did not want to play with it too. He tried Lily to catch the toy car as they could. Max splashing and laughed
+=== prompt 2 [story] ===
+Tom and his mom went to the beach. The sun was hot and
+--- greedy (120 tokens) ---
+Tom and his mom went to the beach. The sun was hot and the water was shining. He had a big smile on his face.
+"Look, Mommy, I found a big, sweetie. It is a big, red and shiny. It is a big, red ball. It is a big, red ball. It has a red ball. It is red and shiny. It is red and shiny. It is red and shiny. It is a red ball. It is red and shiny. It is red and shiny. It is red and shiny. It is red and shiny. It is red and shiny. It is a red ball.
+--- temperature 0.8 seed 1337 (120 tokens) ---
+Tom and his mom went to the beach. The sun was hot and asked his mom what they were were liked. The sun was red and Lily wanted to wear it.
+"Can we add the water?" Tom asked.
+"Of course, you can," Mom said.
+"But you do not stop looking for a look. Let's put it all the water and closed it." Tom was a big, and a guard told Lily to do something else.
+"OK, mom," Tom said. "No, I need to be careful. I want to touch the dirt, slide. I have a bite or that, or you v pain in the
+=== prompt 3 [story] ===
+One day, a small bird could not find its nest. It
+--- greedy (120 tokens) ---
+One day, a small bird could not find its nest. It was a big, shiny and shiny. It was a big, shiny rock. It was a big, shiny rock. It was a big, shiny rock. It was a big, shiny rock. It was a big rock. It had a big rock. It was a big rock. It had a big rock. It was a big rock. It had a big rock. It was a big rock. It had a big rock. It was a big rock. It had a big rock. It was a big rock. It had a stick. It was a big rock. It had a
+--- temperature 0.8 seed 1337 (120 tokens) ---
+One day, a small bird could not find its nest. It was a pretty flower in the sky. The bird was very happy. The bird kept sunny and the bird went down to bottom.
+The bird saw a big, thin bird. The bird's nest was so happy. He wanted to take it home. The bird was happy to help the bird. The bird used the branch to help. The bird and the baby helped the bird to fly to help the tree.
+The bird flew away and the bird became friends! The big bird was very happy. The bird felt something interesting. The little bird looked upset and said, "Come back! You
+=== prompt 4 [factual] ===
+Lily wanted to drink some cold milk, so she opened the
+--- greedy (120 tokens) ---
+Lily wanted to drink some cold milk, so she opened the cupboard. She saw a big, shiny red and shiny. She wanted to eat it, but she was too big. She wanted to eat it, but she was too fast.
+"No, Lily, I don't want to eat it," her mom said. "No, it's mine!"
+Lily was sad. She wanted to help her mom. She said, "I want to play with you, Lily. I want to play with you."
+Lily was sad. She did not want to play with her toys. She wanted to play with her toys. She
+--- temperature 0.8 seed 1337 (120 tokens) ---
+Lily wanted to drink some cold milk, so she opened the pot. She felt sad and sad.
+"Mom, I did not get sick," she said.
+Lily giggled. She made a mess.
+"Mom, you are just hungry. It's time to go inside." Mom said.
+"I don't know," Mom said.
+She put on the floor. She said, "Be careful, Lily. Let's make a mess?"
+"OK, mom. But Mom will be quiet and not for you. But be careful. And we're playing with the mess in trouble."
+Mom hugged Sara and Tom.
+=== prompt 5 [factual] ===
+It was night and the sky was dark. Ben looked up and saw the bright
+--- greedy (120 tokens) ---
+It was night and the sky was dark. Ben looked up and saw the bright light. He was so happy and excited. He wanted to see the sky and the sky.
+"Look, Tom, a big, a big, green sky!" Ben said.
+"Let's go!" Ben said.
+They ran to the sky and saw a big, red sky. It was a big, red bird. It was a big, red bird. It was a big, red bird. It had a big red ball.
+"Wow, it is so pretty!" Tom said.
+"Wow, it is so pretty!" Tom said.
+They ran to the
+--- temperature 0.8 seed 1337 (120 tokens) ---
+It was night and the sky was dark. Ben looked up and saw the bright light. It was small and shiny and had many anything.
+"Look, Sara!" Ben said. "This is amazing, it is my favorite thing. It makes a big box. It makes a big, loud noise. It has many colors. It is a purple dress and green hair. It is black and white.
+"Wow, a beautifulw!" Ben says. "That is a mitten. It is my doll. It is hot and juicy. It is beautiful. It says everyone. It can hop on the sky. It flies into the air. Do not know what
+=== prompt 6 [factual] ===
+When it rains, Sara puts on her boots and takes her
+--- greedy (120 tokens) ---
+When it rains, Sara puts on her boots and takes her to the beach. She puts the sand and puts it in her pocket. She puts it in her pocket and puts it in her pocket.
+"Look, Mommy, I have a big smile. It is a good job. It is a good day. It is a good day. It is a good day. It is a good day. It is a good day. It is not a good thing. It is not a good thing. It is not a toy. It is not a toy. It is not a toy. It is not a toy. It is not a toy
+--- temperature 0.8 seed 1337 (120 tokens) ---
+When it rains, Sara puts on her boots and takes her paper. Ben has a new dress and a same dress. She says, "Yuck! It is so yummy," she says. "It is a very obedient little girl. It is pretty and good. It is a real light and shiny and shiny. She thinks it is like it. She says, "This is the up, Lily. It looks like a shiny thing. It is a secret open. It has a lot of red hair and a pin.
+"Wow, that's my doll is something messy. It is very pretty," Sara says. "How about it?"
+=== prompt 7 [reasoning] ===
+Mia had three apples. She gave one apple to her friend, so now she had
+--- greedy (41 tokens, stopped at EOS) ---
+Mia had three apples. She gave one apple to her friend, so now she had to eat. She was so happy and she had a big smile on her face.
+Mia was so happy that she had found her friend. She was so happy that she had found her friend.
+--- temperature 0.8 seed 1337 (120 tokens) ---
+Mia had three apples. She gave one apple to her friend, so now she had a big spoon. She said, "I don't like to be kind and telling your yummy food. Do you understand?"
+Molly thought for a moment, "I like to read your food. It's a big bowl of drew on the table. The cook was shiny and round. It was brown and round and big.
+When the eat eating, it was time for her friend. The princess was so excited to help the cake. The princess set down and the cake was so happy.
+Molly showed the cake. She thought about how to mix it into little flower.
+=== prompt 8 [reasoning] ===
+The ice cream was left in the sun for a long time. When Jack came back, the ice cream had
+--- greedy (49 tokens, stopped at EOS) ---
+The ice cream was left in the sun for a long time. When Jack came back, the ice cream had a big smile on his face. He was so happy that he had found a new friend.
+Jack was so happy that he had found the ice cream. He was so happy that he had found the ice cream and he was so happy.
+--- temperature 0.8 seed 1337 (75 tokens, stopped at EOS) ---
+The ice cream was left in the sun for a long time. When Jack came back, the ice cream had lots of money, Jack, and his mom came to the park. It was delicious! But the people were only three year old and they liked to say yes. Jack was so happy and decided to go to the park.
+From then on, Jack and his mom always let go make some new things. After a while, he was no longer she was saved them.
+=== prompt 9 [consistency] ===
+Anna had a red ball and Leo had a blue ball. Leo lost his ball, so Anna gave him
+--- greedy (120 tokens) ---
+Anna had a red ball and Leo had a blue ball. Leo lost his ball, so Anna gave him a big ball. She said, "Hello, Ben. I am a little boy. I am a little boy. I like to play with you."
+Ben was sad. He did not want to play with his ball. He did not want to play with his ball. He did not want to play with his ball. He did not want to play with his ball. He did not want to play with his ball. He did not want to play with his ball. He did not want to play with his ball. He did not want to play with his ball. He did not want
+--- temperature 0.8 seed 1337 (120 tokens) ---
+Anna had a red ball and Leo had a blue ball. Leo lost his ball, so Anna gave him a big bag of chocolate. She said, "Let's play a game with us?"
+The dog said, "Of course, I will help you."
+ lion said, "Yes, let's play a ball. It will make me feel much better."
+Anna did not listen to the dog. They did not want to play with the dog. But then, a big dog came out in the backyard. The dog did not want to help him. It came and saw the dog. The dog was angry and rude. The dog saw the cat and the dog was shocked. The dog
+=== prompt 10 [consistency] ===
+Sam was sad because his kite was stuck in a tall tree. His dad came with a long
+--- greedy (120 tokens) ---
+Sam was sad because his kite was stuck in a tall tree. His dad came with a long tail. He was very sad and wanted to play with his friends.
+"Can I play with me?" he asked.
+"Sure, I can help you. But I have to be careful. But I will be careful. But I will not to be careful. I will be careful. I will be careful. I will be careful. I will be careful. I will be careful. I will be careful. I will be careful. I will be careful. I will be careful. I will be careful. I will be careful. I will be careful. I will be careful.
+--- temperature 0.8 seed 1337 (120 tokens) ---
+Sam was sad because his kite was stuck in a tall tree. His dad came with a long wings. It was shiny and shiny.
+Tim was so happy. He asked his dad if he could go outside and grab the tree. Sam said yes and his bow.
+"It's okay, Tim. "I have it for making you a funny noise. Now I will look like the grass. Come in the sky and the sky. The sky became gone.
+He climbed up the tree and pulled and felt warm. He saw a ball! He watched the tree and smiled.
+"Hey, Sam!" Anna said.
+"That looks good, Sam, these are you too

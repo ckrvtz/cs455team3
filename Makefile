@@ -5,7 +5,9 @@
 #   make debug                 -O0 -g ASan/UBSan build, then run the tests under it
 #   make test REAL=double      double-precision build (gradient checks)
 #   make BACKEND=cuda          Phase B   | make COMM=mpi  Phase C | both: Phase D
+#                              (stubs until then; NVCC=/MPICXX= select the tools)
 #   make dist                  submission tarball (fails if Python files remain)
+#   make MODE=profile          dev-only gprof build (release flags + -pg) -> bin/profile-float/
 #   make clean
 #
 # Selection is compile-time only: BACKEND/COMM/REAL become -D macros checked by
@@ -28,12 +30,34 @@ endif
 ifeq ($(filter $(REAL),float double),)
 $(error REAL must be float or double (got '$(REAL)'))
 endif
-ifeq ($(filter $(MODE),release debug),)
-$(error MODE must be release or debug (got '$(MODE)'))
+ifeq ($(filter $(MODE),release debug profile),)
+$(error MODE must be release, debug or profile (got '$(MODE)'))
 endif
 
 # ---- toolchain and flags
 CXX      ?= g++
+NVCC     ?= nvcc
+MPICXX   ?= mpicxx
+
+# Phase B/C/D toolchains (P7.5). BACKEND=cuda compiles src/*/*_cuda.cu with
+# $(NVCC); COMM=mpi compiles everything with the MPI wrapper $(MPICXX). A
+# missing tool stops make here with one message, before anything compiles.
+# With the tools present, the build still stops at the stubs and the guards
+# in include/tslm/build_config.h until those phases are implemented.
+ifneq ($(if $(MAKECMDGOALS),$(filter-out clean dist,$(MAKECMDGOALS)),all),)
+ifeq ($(BACKEND),cuda)
+ifeq ($(shell command -v $(NVCC) 2>/dev/null),)
+$(error BACKEND=cuda needs the CUDA compiler '$(NVCC)' (CUDA toolkit), which was not found; set NVCC=/path/to/nvcc. The CUDA backend itself is Phase B and not implemented yet: see src/ops/ops_cuda.cu and docs/HANDOFF.md)
+endif
+endif
+ifeq ($(COMM),mpi)
+ifeq ($(shell command -v $(MPICXX) 2>/dev/null),)
+$(error COMM=mpi needs the MPI compiler wrapper '$(MPICXX)' (OpenMPI), which was not found; set MPICXX=/path/to/mpicxx. The MPI build itself is Phase C and not implemented yet: see src/comm/comm_mpi.cpp)
+endif
+CXX := $(MPICXX)
+endif
+endif
+
 CXXSTD   := -std=c++17
 WARN     := -Wall -Wextra -Wpedantic
 CPPFLAGS := -Iinclude -MMD -MP \
@@ -46,6 +70,11 @@ ifeq ($(MODE),release)
 # -O3 -march=native only; -ffast-math is forbidden (CLAUDE.md §1.5).
 OPTFLAGS := -O3 -march=native
 LDSAN    :=
+else ifeq ($(MODE),profile)
+# Dev-time profiling only (P7.2, scripts/profile.sh): the release flags plus
+# gprof instrumentation. Never used by make test or make dist.
+OPTFLAGS := -O3 -march=native -pg
+LDSAN    := -pg
 else
 OPTFLAGS := -O0 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 LDSAN    := -fsanitize=address,undefined
@@ -58,6 +87,17 @@ LDLIBS   :=
 # ---- output locations
 CFG_TAG   := $(MODE)-$(BACKEND)-$(COMM)-$(REAL)
 BUILD_DIR := build/$(CFG_TAG)
+
+# Code-generation target stamp: with -march=native the objects are specific
+# to the CPU that compiled them, and make cannot see a CPU change by itself
+# (this container moved between CPUs once; docs/DECISIONS.md). The stamp
+# holds a checksum of the compiler's predefined macros under the actual flags
+# (instruction-set and tuning macros such as __AVX512F__ and __tune_<cpu>__
+# appear there). EVERY object depends on it (the %.o rule below), so a
+# different CPU, compiler or flag set rebuilds everything. Defined here, before
+# that rule, because make expands rule prerequisites when it reads them.
+TARGET_ID    := $(shell $(CXX) $(CXXFLAGS) -dM -E -x c++ - </dev/null 2>/dev/null | cksum | cut -d' ' -f1)
+TARGET_STAMP := $(BUILD_DIR)/target.stamp
 # The default release float build puts apps in bin/ (as ROADMAP §4.1 names
 # them); every other mode/precision gets its own bin/<mode>-<real>/.
 ifeq ($(MODE)-$(REAL),release-float)
@@ -84,6 +124,9 @@ ALL_LIB_SRCS     := $(wildcard src/*/*.cpp)
 LIB_SRCS := $(filter-out $(VARIANT_PATTERNS),$(ALL_LIB_SRCS)) \
             $(filter %_$(BACKEND).cpp %_$(COMM).cpp,$(ALL_LIB_SRCS))
 LIB_OBJS := $(LIB_SRCS:%.cpp=$(BUILD_DIR)/%.o)
+# CUDA sources (*_cuda.cu) only in BACKEND=cuda builds, compiled by $(NVCC).
+CU_SRCS  := $(if $(filter cuda,$(BACKEND)),$(wildcard src/*/*_cuda.cu))
+LIB_OBJS += $(CU_SRCS:%.cu=$(BUILD_DIR)/%.o)
 LIB      := $(BUILD_DIR)/libtslm.a
 
 APP_SRCS := $(wildcard apps/*.cpp)
@@ -114,9 +157,15 @@ debug:
 	$(MAKE) MODE=debug all test
 
 # ---- build rules
-$(BUILD_DIR)/%.o: %.cpp
+$(BUILD_DIR)/%.o: %.cpp $(TARGET_STAMP)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+# nvcc gets the -D/-I flags but not g++'s -MMD/-MP/-march/warning flags;
+# Phase B adds its own flags (architecture, -O3) here.
+$(BUILD_DIR)/%.o: %.cu $(TARGET_STAMP)
+	@mkdir -p $(dir $@)
+	$(NVCC) $(filter-out -MMD -MP,$(CPPFLAGS)) $(CXXSTD) -c $< -o $@
 
 # ---- build facts for runs/<name>/manifest.txt (src/train/manifest.cpp only).
 # The git hash ("-dirty" if tracked files differ from HEAD, "unknown" outside a
@@ -127,9 +176,11 @@ GIT_HASH    := $(shell h=$$(git rev-parse --short=12 HEAD 2>/dev/null) || h=unkn
                  if [ "$$h" != unknown ] && ! git diff --quiet HEAD -- 2>/dev/null; then h=$$h-dirty; fi; echo $$h)
 BUILD_INFO  := $(GIT_HASH) | $(CXX) $(CXXFLAGS)
 BUILD_STAMP := $(BUILD_DIR)/build_info.txt
+
 # Skipped when the only goals are clean/dist (no build happens then).
 ifneq ($(if $(MAKECMDGOALS),$(filter-out clean dist,$(MAKECMDGOALS)),all),)
 $(shell mkdir -p $(BUILD_DIR); [ "$$(cat $(BUILD_STAMP) 2>/dev/null)" = '$(BUILD_INFO)' ] || printf '%s' '$(BUILD_INFO)' > $(BUILD_STAMP))
+$(shell [ "$$(cat $(TARGET_STAMP) 2>/dev/null)" = '$(TARGET_ID)' ] || printf '%s' '$(TARGET_ID)' > $(TARGET_STAMP))
 endif
 MANIFEST_OBJ := $(BUILD_DIR)/src/train/manifest.o
 $(MANIFEST_OBJ): $(BUILD_STAMP)

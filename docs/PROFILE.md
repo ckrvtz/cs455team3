@@ -88,3 +88,73 @@ element-wise loops over each parameter tensor; they auto-vectorize because
 `sqrt` and division are plain IEEE operations. The bias corrections are
 computed once per call in double. All three are memory-bound and run once
 per step, which is negligible next to the matmuls.
+
+## Profile of the serial step (P7.2)
+
+Workload W-A (`small`: 2 layers, C=128, V=10,000, B=32, T=256; tied head).
+Machine: this project's cloud container, Intel Xeon @ 2.30GHz with
+AVX-512, 4 cores (1 used), 16 GB. Build: release flags, plus `-pg` for the
+op table only.
+
+### Share by phase
+
+From `bench/serial_W-A.csv` (3 runs, mean of the per-run phase means; the
+phases sum to the mean step of 3609.9 ms):
+
+| Phase | ms/step | Share |
+|---|---|---|
+| backward (incl. grad zeroing) | 2197.6 | 60.9% |
+| forward | 1404.5 | 38.9% |
+| optimizer (clip + AdamW) | 7.6 | 0.2% |
+| data (batch copy) | 0.13 | < 0.01% |
+| comm (no-op in serial) | 0.000 | 0% |
+
+### Share by op
+
+The raw output is `docs/profile/serial_W-A_gprof.txt`, from
+`scripts/profile.sh` at commit `90873e7` (13 steps, the first 3 being
+warmup). gprof sampled 42.77 s. The same run's 13 steps took 13 × 3651.1 ms
+(mean) ≈ 47.5 s, so about 90% of step time was sampled. The remainder is
+time inside libm/libc (`exp`, `tanh`, `memset`), which is not compiled with
+`-pg` and so not attributed, plus instrumentation overhead. The profiled
+run's median step (3688.2 ms) is 2.2% above the mean of the three
+uninstrumented W-A medians (3610.2 ms; they range 3567.1–3640.0 ms), so
+`-pg` perturbs the timing only slightly.
+
+| Op | Self time | Share of sampled |
+|---|---|---|
+| **matmul (all)** | 34.81 s | **81.4%** |
+| ├ `matmul_backward` (dinp and dweight) | 24.35 s | 56.9% |
+| └ `matmul_forward` (4×4 micro-kernel + driver) | 10.46 s | 24.5% |
+| `softmax_xent_forward` (V = 10,000, scalar `exp`) | 2.59 s | 6.1% |
+| `attention_backward` | 1.82 s | 4.3% |
+| `attention_forward` | 1.00 s | 2.3% |
+| `softmax_xent_backward` | 0.67 s | 1.6% |
+| `gelu_forward` + `gelu_backward` | 0.68 s | 1.6% |
+| `layernorm_forward` + `layernorm_backward` | 0.58 s | 1.4% |
+| `_init` (PLT stubs into libm/libc) | 0.45 s | 1.1% |
+| AdamW, sum of squares, scale, residual, embedding | 0.11 s | 0.3% |
+
+### Findings
+
+- **Matmul dominates: 81% of sampled time, roughly 73% of step time.** This
+  is below ROADMAP §13's ">90%" planning estimate. The rest is mostly ops
+  that §13 did not count:
+  - the cross-entropy forward over V = 10,000 (6.1%, plus its unattributed
+    `exp` calls in libm);
+  - causal attention at T = 256 (6.6%);
+  - element-wise ops (about 3%).
+
+  CUDA speedups will therefore depend on more than the matmul. These ops
+  are the next candidates.
+- **matmul backward costs 2.33× matmul forward** (24.35 s vs 10.46 s) for
+  2× the arithmetic: it computes both dinp and dweight. Its kernels are
+  about 14% less efficient per FLOP than the forward micro-kernel.
+  - This is recorded, not tuned. The serial baseline stays "reasonable,
+    not heroic" (CLAUDE.md §7), and the backward blocking is documented
+    above.
+- **The optimizer and the data path are negligible** (0.2% and < 0.01% of
+  step time, with the token file pre-read by `bench`).
+- **Per-call counts confirm the wiring:** 117 matmul calls = 13 steps × 9
+  linears (4 per layer × 2 layers + the head), and 26 attention calls =
+  13 × 2 layers.
