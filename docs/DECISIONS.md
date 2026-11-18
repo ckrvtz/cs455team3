@@ -1171,3 +1171,83 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **Procedure:** the two rules from the correction entry still hold (touch
   after restoring a mutated file; clean rebuild before recording numbers).
   The stamp is an additional safeguard, not a replacement.
+
+## 2026-11-18: README completed and verified from a clean clone (P7.3)
+
+- **Change:** `README.md` gained:
+  - a quick start (clone to evaluated smoke model);
+  - three reproduction recipes (smoke run, the P5.2 `small` run,
+    benchmarks);
+  - the reference-machine table;
+  - a verification note.
+
+  The golden-data section now points to `tests/golden/README.md` for the
+  regeneration commands instead of listing an abbreviated, non-runnable
+  `...` command.
+- **Verification method:** a script ran every README command in README order
+  in a fresh `git clone https://github.com/ckrvtz/cs455team3.git`, on the
+  reference machine (Xeon @ 2.30GHz AVX-512, 4 cores, 16 GB, Ubuntu 24.04.5,
+  g++ 13.3.0, GNU Make 4.3).
+  - The clone needed one extra step that is not in the README,
+    `git checkout claude/wizardly-einstein-0ilutz`, because the work is not
+    yet merged to the default branch.
+  - The two `small`-run training commands were run until they proved
+    themselves: the first to its step-250 checkpoint, the resume to step
+    260. Then they were stopped.
+- **Log** (status, seconds, command):
+
+```
+  OK 1s :: git clone https://github.com/ckrvtz/cs455team3.git
+  OK 0s :: git checkout claude/wizardly-einstein-0ilutz
+  OK 16s :: make
+  OK 47s :: make test
+  OK 31s :: scripts/download_data.sh
+  OK 35s :: bin/prepare_data
+  OK 6s :: bin/train_serial --config configs/smoke.cfg
+  OK 0s :: bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --temperature 0.8 --top_k 50 --seed 7
+  OK 2s :: bin/eval --ckpt runs/smoke/ckpt_latest.bin
+  OK 147s :: make debug
+  OK 70s :: make test REAL=double
+  OK 0s :: make dist
+  OK 4s :: make REAL=double
+  OK 0s :: bin/release-double/gradcheck
+  OK 0s :: bin/release-double/gradcheck --tie_embeddings 0
+  OK 0s :: bin/inspect_data --n 3
+  OK 2s :: bin/train_serial --config configs/smoke.cfg --max_steps 50 --run_name try1
+  OK 6s :: bin/train_serial --config configs/smoke.cfg --ckpt_every 100
+  OK 3s :: bin/train_serial --config configs/smoke.cfg --ckpt_every 100 --resume runs/smoke/ckpt_100.bin
+  OK 1s :: bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --greedy 1 --max_new 40
+  OK 0s :: bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --temperature 0.8 --top_k 50 --seed 7
+  OK 2s :: bin/eval --ckpt runs/smoke/ckpt_latest.bin
+  OK 0s :: mkdir -p data/p52
+  OK 2s :: bin/prepare_data --max_tokens 20000000 --out_dir data/p52
+  OK(stopped after: checkpoint runs/small_p52/ckpt_250.bin (+ ckpt_latest.bin), 74 ms) 1006s :: bin/train_serial --config configs/small.cfg --train_data data/p52/train.bin --val_data data/p52/val.bin --run_name small_p52
+  OK(stopped after: step    260/2400 | loss 4.0684 | lr 9.983e-04 | gnorm 0.979 | 3696.8 m) 40s :: bin/train_serial --config configs/small.cfg --train_data data/p52/train.bin --val_data data/p52/val.bin --run_name small_p52 --resume runs/small_p52/ckpt_latest.bin
+  OK 0s :: python3 dev_only/plot_log.py runs/small_p52/curves.svg runs/small_p52/log.csv
+  OK 16s :: bin/eval --ckpt runs/small_p52/ckpt_latest.bin --vocab_map data/p52/vocab_map.txt
+  OK 18s :: make clean && make
+  OK 13s :: scripts/bench.sh W-C
+  OK 557s :: scripts/bench.sh W-A
+  FAIL(141) 63s :: scripts/profile.sh
+  OK 0s :: python3 dev_only/plot_log.py curves.svg runs/small_p52/log.csv
+  TOTAL 2088s
+```
+
+- **Results:**
+  - 32 of 33 commands passed. The one failure was `scripts/profile.sh`,
+    exit 141 (SIGPIPE): gprof was piped into `head -45` under
+    `set -o pipefail`. It had passed in the working copy only because
+    gprof's output happened to fit in the pipe buffer.
+  - Fix: the script uses `sed -n '1,45p'`, which reads all input. It passed
+    twice in the clone afterwards. Its numbers agree with the committed
+    profile within run-to-run noise (matmul backward 55.6% vs 56.9%), so the
+    committed profile and `docs/PROFILE.md` were not regenerated.
+  - Quick start: 138 s of machine time.
+- **Observed on the way** (an early indication, not a P5.2 result): at step
+  200 of the `small` run, val loss was 4.2254. The step-250 samples were
+  TinyStories-like fragments; greedy decoding looped ("I'm sorry, ..."), as
+  RUBRIC.md anticipates.
+- **DoD:** every README command was verified in that run, and a teammate's
+  attended time is the quick start plus starting the unattended jobs. The
+  "under 30 min" part is a statement about a person's time, so it can only
+  be confirmed by a teammate repeating it.

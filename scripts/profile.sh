@@ -31,6 +31,8 @@ GMON=$(ls "$WORK"/gmon.* | head -1)
   echo "# bench row of this run (timings include gprof overhead):"
   tail -1 "$WORK/bench.csv" | sed 's/^/#   /'
   echo "#"
-  gprof -b -p bin/profile-float/bench "$GMON" | head -45
+  # sed reads all of gprof's output; `head` would close the pipe early and,
+  # under pipefail, fail the script with SIGPIPE (exit 141).
+  gprof -b -p bin/profile-float/bench "$GMON" | sed -n '1,45p'
 } > "$OUT"
 echo "wrote $OUT"

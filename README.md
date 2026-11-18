@@ -23,8 +23,9 @@ are in [`CLAUDE.md`](CLAUDE.md).
 
 ## Quick start (clean clone to a trained smoke model)
 
-About 10 minutes on the reference machine below, most of it the 2 GB
-download and tokenization.
+Measured on the reference machine below: 138 s of machine time from
+`git clone` to the evaluated model, of which download 31 s, tokenization
+35 s and `make test` 47 s (network speed varies).
 
 ```bash
 git clone https://github.com/ckrvtz/cs455team3.git
@@ -75,6 +76,10 @@ bin/eval --ckpt runs/small_p52/ckpt_latest.bin --vocab_map data/p52/vocab_map.tx
   prompt samples.
 - **Details:** the expected cost and the plateau criterion are in
   [`docs/RUNS.md`](docs/RUNS.md).
+- **How far it was verified:** in the clean-clone check (below), training
+  ran to its first checkpoint (step 250, 1006 s) and was stopped, and
+  resuming continued to step 260. The full 2,400 steps have not been run
+  here yet (P5.2).
 
 ### 3. Benchmarks (about 12 min)
 
@@ -93,6 +98,15 @@ scripts/bench.sh W-A
   | W-C (smoke) | ≈ 20.1 ms | 6.3k–6.4k |
   | W-A (small, B=32) | ≈ 3.61 s | 2.25k–2.30k |
 - **Conditions:** run on an idle machine.
+
+### Verification
+
+Every command in this README was run, in order, from a fresh clone on the
+reference machine on 2026-11-18. That is 32 commands in 2,088 s of machine
+time: the long `small` training was stopped at its first checkpoint, as
+described above. One command failed (`scripts/profile.sh`, a SIGPIPE under
+`pipefail`); it was fixed and passed twice on rerun. The log is in
+`docs/DECISIONS.md`.
 
 ### Reference machine
 
