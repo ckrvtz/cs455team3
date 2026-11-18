@@ -118,14 +118,20 @@ TEST(sum_reduce_accumulates_in_double) {
     EXPECT_EQ(ops::sum_reduce(nullptr, 0), 0.0);
     const real_t ints[5] = {1, 2, 3, 4, -10};
     EXPECT_EQ(ops::sum_reduce(ints, 5), 0.0);
-    // 1e6 copies of real_t(0.1): a real_t accumulator would drift by ~1%
-    // in float; a double accumulator matches n * double(real_t(0.1)).
+    // 1e6 copies of 0.1f (a 24-bit-mantissa value, widened to real_t). A
+    // double accumulator adds these EXACTLY (every partial sum fits in 53
+    // bits), so the result must equal n * 0.1f to within 1e-6 in both builds.
+    // In the float build, a float accumulator would drift by about 1%. In
+    // the double build real_t is double, so this case cannot tell the two
+    // accumulators apart. (Plain real_t(0.1) in the double build is a full
+    // 53-bit value whose sum legitimately rounds, which is why 0.1f is used.)
     const size_t n = 1000000;
-    std::vector<real_t> x(n, real_t(0.1));
-    const double want = double(n) * double(real_t(0.1));
+    const real_t v = static_cast<real_t>(0.1f);
+    std::vector<real_t> x(n, v);
+    const double want = double(n) * double(v);
     const double got = ops::sum_reduce(x.data(), n);
     EXPECT_NEAR(got, want, 1e-6);
-    std::printf("    sum_reduce(1e6 x 0.1) = %.9f (exact for these inputs: %.9f)\n", got, want);
+    std::printf("    sum_reduce(1e6 x 0.1f) = %.9f (exact for these inputs: %.9f)\n", got, want);
 }
 
 TEST_MAIN()
