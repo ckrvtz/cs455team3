@@ -12,6 +12,7 @@ Companion file: `CLAUDE.md` (rules for LLM-assisted development). If the two eve
 - Sections 2, 4, 6, 8 are **contracts**. Do not change them silently. A change needs (a) an entry in `docs/DECISIONS.md`, (b) a note on the impact for CUDA/MPI, (c) updated tests.
 - "Definition of Done" (DoD) for a task = all listed acceptance criteria pass **and** `make test` is green.
 - Anything marked **(DECISION)** is a default chosen by this roadmap to unblock work. The team may override it, but record the change.
+- `README.md` is maintained continuously: a task that adds or changes anything a user runs or configures also updates the README in the same change (CLAUDE.md §2), so it always matches the current state of the code. See `docs/DECISIONS.md`, 2026-11-18.
 
 ---
 
@@ -173,7 +174,7 @@ optim/ (adamw, clip)      data/ (tokenizer, loader; HOST only, always)
 .
 ├── CLAUDE.md
 ├── ROADMAP.md
-├── README.md                 # build/run/reproduce; written in P7
+├── README.md                 # build/run/reproduce; kept current every task, completed in P7.3
 ├── THIRD_PARTY.md            # every cited external source (see CLAUDE.md)
 ├── Makefile
 ├── configs/                  # smoke.cfg small.cfg base.cfg   (key=value text)
@@ -448,7 +449,7 @@ Week mapping follows the proposal. **Owner** column is the proposal's suggested 
 |---|---|---|
 | P7.1 | `bench` app (§12) emitting one CSV row per run | reproducible within ±3% across 3 runs |
 | P7.2 | Profile serial (`perf` or `gprof`, dev-time only): confirm matmul dominates; record % by phase in `docs/PROFILE.md` | profile committed as text |
-| P7.3 | `README.md`: exact commands to reproduce data prep, tests, a smoke run, a `small` run, a benchmark; machine spec table | a teammate can reproduce from a clean clone in under 30 min of attended time |
+| P7.3 | Complete `README.md` (maintained since P3.1): add exact commands to reproduce a smoke run, a `small` run and a benchmark, plus the machine spec table; re-verify every command from a clean clone | a teammate can reproduce from a clean clone in under 30 min of attended time; every README command verified in that run |
 | P7.4 | `docs/HANDOFF.md`: for each `ops::` function, a one-paragraph note of what its CUDA kernel must preserve (shapes, accumulation, tolerance), plus the memory arena sizes for each preset | complete for every function in `ops.h` |
 | P7.5 | Stub `src/ops/ops_cuda.cu` and `src/comm/comm_mpi.cpp` that compile (or `#error` clearly) under the right Makefile variables | `make BACKEND=cuda` / `COMM=mpi` fail with a clear message or build stubs |
 
@@ -492,6 +493,7 @@ Implications (this is why the proposal truncates data):
 - [ ] `ops.h`, `backend.h`, `comm.h` frozen; `HANDOFF.md` written
 - [ ] Checkpoint and `log.csv` formats frozen
 - [ ] `THIRD_PARTY.md` complete; no Python outside `dev_only/`; `make dist` passes its purity check
+- [ ] `README.md` current: every command in it run successfully from a clean clone; Status line says Phase A is complete
 
 ---
 
