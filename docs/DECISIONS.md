@@ -928,3 +928,46 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **Impact:** none on code or formats. The `small` preset is also benchmark
   workload W-A, which uses fixed step counts, so `max_steps` there is
   overridden.
+
+## 2026-11-18: Generation app and sampling rules (P6.1)
+
+- **Library:** `include/tslm/generate.h`, `src/train/generate.cpp`.
+  - `sample_token` is host-side (§4.8). Its rules:
+    - `<unk>` is excluded unless `--allow_unk 1`, since it decodes to no
+      text.
+    - Greedy takes the argmax, with ties going to the lowest id.
+    - Otherwise: top-k (ties ranked by lower id), then
+      softmax(logit / temperature) in double, accumulated in id order, and
+      one `Rng::uniform()` draw.
+  - `generate_ids` runs `model_forward` with B = 1 over a sliding window of
+    the last `max_seq_len` tokens (no KV cache, a Phase A non-goal). It
+    copies the last row of logits to the host and stops at EOS (not
+    returned) or `max_new`.
+  - Randomness uses only `Rng(seed, SAMPLING_STREAM = 1000000)`, a stream
+    separate from init (0..#tensors) and data order (100 + epoch), so a run
+    with the same options and seed is reproducible.
+- **App:** `apps/generate.cpp`.
+  - The model shape comes from the checkpoint header.
+  - The prompt is encoded by our BPE, mapped to vocab ids (unknown → `<unk>`
+    with a warning) and prefixed with EOS, which precedes every story in the
+    training stream.
+  - Output is the prompt plus the decoded continuation.
+- **Known gap:** nothing ties a checkpoint to its `vocab_map.txt`; only the
+  size is checked. A mismatched map would decode wrong words silently. A
+  real fix (a vocab hash in the checkpoint or manifest) would be a format
+  change and needs the contract process. For now it is documented in the
+  app header and README.
+- **DoD status:**
+  - **Reproducible greedy output:** met and tested. Two runs give identical
+    tokens, and each token equals the argmax of a direct forward over the
+    window, including a context longer than `max_seq_len`.
+  - **Grammatical continuations on `small`:** pending the P5.2 checkpoint.
+    The smoke model (333k params, 200 steps) yields word salad, as
+    expected.
+- **Measured** (`tests/test_generate.cpp`): sampled frequencies over 200k
+  draws match softmax(l/0.7) within 5 standard errors.
+- **Mutation evidence:** the tests failed on each of four planted bugs:
+  - a window over the first tokens instead of the last;
+  - greedy ties going to the higher id;
+  - temperature multiplied instead of divided;
+  - EOS returned.

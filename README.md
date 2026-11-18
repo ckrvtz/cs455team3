@@ -11,7 +11,8 @@ preparation, loader), the full forward and backward passes, and the
 full-model gradient check, the AdamW optimizer with its LR schedule, and the
 training loop (`train_serial`) with validation and checkpoint/resume are
 done (Phases 0–4); `make test` includes the overfit and smoke training tests.
-Generation and benchmarking are not built yet.
+Generation works (`generate`); prompt evaluation and benchmarking are not
+built yet.
 
 ## Requirements
 
@@ -126,6 +127,24 @@ bin/train_serial --config configs/smoke.cfg --ckpt_every 100 --resume runs/smoke
 - **Timing:** the first run after a reboot can be much slower. The 927 MB
   token file is read at random positions, and those reads are slow until the
   file is in the OS page cache; the extra time shows up in `data_ms`.
+
+## Generation
+
+```bash
+bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --greedy 1 --max_new 40
+bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --temperature 0.8 --top_k 50 --seed 7
+```
+
+- **Input:** a checkpoint from a training run; the model shape comes from
+  it. `--vocab_map` (default `data/vocab_map.txt`) must come from the same
+  `prepare_data` run as that training data, for example
+  `data/p52/vocab_map.txt` for the P5.2 run. Only its size is checked.
+- **Sampling:** `--greedy 1`, or `--temperature T` with optional
+  `--top_k K`, and `--seed`. Output stops at end-of-story or after
+  `--max_new` tokens. `<unk>` is never generated unless `--allow_unk 1`.
+- **Output:** the prompt followed by the continuation. Same options and seed
+  give the same text. The tiny smoke model produces word salad; readable
+  stories need the `small` run.
 
 ## Long runs
 
