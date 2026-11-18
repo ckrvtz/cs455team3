@@ -163,3 +163,212 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   tokens). Pre-token splits were also identical on the latter.
 - **Impact:** none on CUDA/MPI (host-only). `dev_only/requirements.txt` pins
   `tokenizers==0.21.1` for regenerating golden files.
+
+## 2026-11-17: prepare_data details (P1.3)
+
+- **Token file header:** §7.3 lists `magic(4) + u32 version + u32
+  vocab_size + u64 num_tokens + 8 reserved` = 28 bytes but calls the header
+  32 bytes. The extra 4 bytes are taken as natural-alignment padding before
+  the u64, which is the layout a C struct with those fields has:
+  `num_tokens` at offset 16, reserved at 24..31, bytes 12..15 zero. Every
+  field is little-endian and written byte by byte. Spelled out in
+  `include/tslm/token_file.h` (frozen).
+- **Story splitting:** input is split on the literal `<|endoftext|>`. Each
+  story is trimmed of leading/trailing ASCII whitespace (the files put `\n`
+  on both sides of every separator) and empty stories are skipped. One EOS
+  (new id 1) follows every story.
+- **Truncation:** `--max_tokens N` keeps whole stories while the running
+  total, EOS included, stays ≤ N. `--max_stories N` keeps the first N
+  non-empty stories. Both apply to train only.
+- **Vocab fill:** if fewer than V-2 distinct tokens occur in train,
+  zero-count tokens fill the rest by the same (count desc, GPT id asc) order.
+  `vocab_size` is an option (default 10,000) so tests can use a tiny V.
+- **Hashes:** `meta.txt` hashes are 64-bit FNV-1a. The vocab hash covers the
+  GPT ids in new-id order (u32 LE, `<unk>` = 0xFFFFFFFF). The output hashes
+  cover the whole `.bin` files.
+- **Impact:** the loader (P1.4) reads `num_tokens` at offset 16. CUDA/MPI
+  builds read the same files unchanged.
+
+## 2026-11-18: DataLoader details (P1.4)
+
+- **Change:**
+  - **Fisher–Yates direction:** `epoch_permutation` uses
+    `for i = n-1 down to 1: j = rng.uniform_int(i+1); swap(perm[i], perm[j])`
+    with `Rng(seed, 100 + epoch)`. That order is frozen by a known-answer
+    test, and every build (CUDA/MPI) must reproduce it.
+  - **Resume state:** `{epoch, step}` is the global position (same on every
+    rank). An epoch rolls over lazily, so `{e, steps_per_epoch}` and
+    `{e+1, 0}` serve the same next batch.
+  - **Token validation:** every token is checked against the header's
+    `vocab_size` as it is copied.
+  - **POSIX `mmap`:** the token file is mapped with POSIX `mmap`, which is
+    host-only and available on Linux/macOS clusters.
+- **Reason:** ROADMAP §7.4, §4.5. With the state and permutation defined
+  globally, a 4×8 sharded run serves the same rows as a serial batch of 32,
+  which the sharding-equivalence test checks.
+- **Impact:** Phase C ranks open the same file with `(rank, world_size)`.
+  The checkpoint (P4.3) stores `LoaderState`.
+
+## 2026-11-18: Gradient zeroing is timed under `bwd` (resolves the open `zero` phase question)
+
+- **Change:** each training step zeroes `grads` once, as its **first** action
+  (CLAUDE.md §4.7 order: `zero_grads → forward → backward →
+  comm_allreduce_avg → clip → AdamW`). The time is charged to `Phase::Bwd`
+  (`t.begin(Bwd); zero(grads); t.end(Bwd);`). `PhaseTimer` sums repeated
+  begin/end pairs, so `bwd_ms` = zeroing + backward. Any activation-gradient
+  buffers that backward accumulates into (P3.5) are zeroed under `bwd` as
+  well. ROADMAP §9's separate `t.zero` phase, placed between forward and
+  backward, is superseded: there is no `zero` phase and no `zero_ms` column.
+- **Reason:** `log.csv`, the bench CSV and `PhaseTimer` (data, fwd, bwd,
+  comm, opt) stay frozen and unchanged. The phase columns still sum to
+  `step_ms`, so benchmarks stay honest. Zeroing exists only because backward
+  accumulates (`+=`), so it belongs with backward. Running it before forward
+  instead of after is numerically identical, because forward never touches
+  `grads`.
+- **Impact:** none on loss, gradients or parameters. All four builds must
+  time zeroing the same way, so their `bwd_ms` values stay comparable. If
+  P3.5/P7.2 profiling shows activation-gradient zeroing is a significant part
+  of `bwd_ms`, record the split in `docs/PROFILE.md` instead of adding a
+  column. Making backward overwrite on first write instead of zeroing would
+  change the `+=` convention and needs approval.
+
+## 2026-11-18: ops.h conventions (P2.1)
+
+- **Change:** `include/tslm/ops.h` is created with the four P2.1 forward
+  signatures, copied exactly from ROADMAP §8. Later tasks add the remaining
+  §8 functions as they implement them, so no declared op lacks a definition.
+  - **Aliasing:** output buffers must not overlap input buffers in any op.
+    That leaves CUDA kernels free to reorder.
+  - **File layout:** CPU kernels go in one file per op family,
+    `src/ops/<family>_cpu.cpp`. The `_cpu` suffix means only `BACKEND=cpu`
+    compiles them.
+  - **LayerNorm numerics:** two passes (mean, then centered sum of squares),
+    accumulated in double. `mean`/`rstd` are rounded to `real_t` once, and
+    those rounded values are both used for the normalization and saved for
+    backward.
+- **Reason:** CLAUDE.md §4.2 and §5. The double accumulation and the
+  consistent saved statistics help the float32-vs-float64 golden tolerances
+  (§10).
+- **Impact:** CUDA `ops_cuda.cu` (Phase B) implements the same signatures
+  under the same no-overlap rule. Its LayerNorm reductions may reorder sums,
+  which the §10 equivalence tolerances allow.
+
+## 2026-11-18: Model API types (P2.5), APPROVED 2026-11-18 (option A)
+
+- **Change** relative to the ROADMAP §8 Model API sketch:
+  1. **Loss type:** `model_forward` returns **`double`** (the sketch says
+     `float`). The value is the host-side mean of a double `sum_reduce`.
+  2. **Logits type:** `model_logits` returns **`const real_t*`** (the sketch
+     says `const float*`).
+  3. **Struct visibility:** `struct Model` is defined in `model.h` instead of
+     being opaque, so the training loop and optimizer can reach the
+     `params`/`grads`/`m`/`v` pointers and layouts. The sketch already lists
+     those members.
+  4. **Device tokens:** `tokens`/`targets` passed to `model_forward` are
+     device buffers (host memory in the CPU build). Per §9, the loop
+     `copy_h2d`s them during the data phase.
+  5. **`model_summary()`:** added, so apps can print parameter counts and the
+     activation arena in MB at startup (P2.5 DoD).
+- **Reason:**
+  1. CLAUDE.md §5 requires double for loss accumulations, and the P3.6
+     `REAL=double` finite-difference gradcheck needs a double-precision loss.
+     A `float` return would cap it near 1e-7 relative.
+  2. In the `REAL=double` build the logits are doubles, so a `float*` cannot
+     point at them.
+  - In the release float build both types hold exactly the same values as
+    the sketch's.
+- **Impact:** CUDA/MPI builds use the same signatures. `model_logits` is a
+  device pointer there, so generation must `copy_d2h` the last-position
+  slice. No file format changes.
+- **Init (§2.3) as implemented:** tensors are classified by name suffix
+  (`_b` → 0, `_g` → 1, `proj_w`/`fcproj_w` → N(0, 0.02/√(2L)), other 2-D
+  weights → N(0, 0.02)). Tensor *i* uses `Rng(seed, i)`, as §4.6 requires.
+- **Measured:** fresh `base` model on `data/val.bin` (seed 1337, 2×4×256
+  tokens): initial loss **9.2641**, versus ln(10000) = 9.2103 (DoD ±0.15).
+
+## 2026-11-18: Golden data format and forward golden cases (P2.6)
+
+- **Change:**
+  - **TSGD format:** golden tensors use a new named-tensor container
+    (`include/tslm/tensor_file.h`): little-endian; `f32`/`f64`/`i32`/`i64`.
+  - **`dump_init`:** the app writes the config, the seed, the
+    `model_init_weights` params as f32 (optionally × `--scale`), and a batch
+    drawn from `Rng(seed, 900000)`. That stream is kept apart from the init
+    streams (tensor index) and the data streams (100 + epoch).
+  - **`gen_golden.py`:** `dev_only/gen_golden.py` re-implements the model in
+    float64 PyTorch 2.5.1 and writes the loss, per-position losses and
+    logits.
+  - **Committed cases:** `tiny` (§10 config, tied, standard init) and
+    `tiny_untied_x10` (untied, weights × 10). Recipe in
+    `tests/golden/README.md`.
+- **Reason:** ROADMAP §10. At standard init the logits are nearly uniform, so
+  loss is a weak signal. Deliberately dropping the attention 1/√hs scale
+  changed the `tiny` loss by only 9.2e-6 relative (inside the §10 1e-5 loss
+  tolerance) but moved its logits by 7.6e-4 relative L2, and the ×10 case
+  by 1.2e-2 in loss. So `test_golden` also checks per-position losses and
+  logits rel-L2 (< 1e-5), in addition to the §10 loss criterion.
+- **Measured (`make test`):**
+
+  | Build | `tiny` loss rel err | `tiny_untied_x10` loss rel err | Logits rel-L2 (worst) |
+  |---|---|---|---|
+  | float | 8.4e-9 | 3.1e-8 | 4.6e-7 |
+  | double | 0 | 3.4e-16 | 9.2e-16 |
+
+- **Tooling note:** `download.pytorch.org` (CPU wheel) is not allowed in the
+  cloud environment, so the PyPI wheel was installed together with its CUDA
+  runtime packages (~2.5 GB). PyTorch remains offline/dev-only: `make`,
+  tests and `make dist` never use it.
+- **Impact:** P3.7 extends `gen_golden.py` with gradients and AdamW steps on
+  the same cases. CUDA/MPI builds compare against the same files.
+
+## 2026-11-18: Model API types approved (resolves the P2.5 open question)
+
+- **Change:** the team approved option A. `model_forward` returns `double`
+  and `model_logits` returns `const real_t*`, as implemented in P2.5. These
+  signatures supersede the `float` / `const float*` sketch in ROADMAP §8.
+- **Reason:** the P3.6 gradient check (§10: central differences, ε = 1e-5,
+  rel err < 1e-6, `REAL=double`) needs a double-precision loss. A `float`
+  loss would give about 1e-2 error in the numeric gradients. In the
+  double build the logits are doubles, so the pointer must be `real_t*`.
+  Option C (raising ε) was rejected: it would loosen the §10 test.
+- **Impact:** none on the float builds' values, training, `log.csv`,
+  checkpoints or file formats. CUDA/MPI implement the same signatures:
+  `model_forward` returns a host double, and `model_logits` is a device
+  pointer (generation copies the last-position row to the host).
+
+## 2026-11-18: GELU evaluated as x·σ(2u) instead of 0.5·x·(1+tanh u) (P3.1)
+
+- **Change:** `gelu_forward`/`gelu_backward` evaluate the §6.3 tanh-GELU
+  through the exact identity 1 + tanh(u) = 2σ(2u):
+  `out = x·σ(2u)` and `d/dx = s + 2x·s·(1−s)·k0·(1+3k1x²)`, with `s = σ(2u)`
+  and `1−s = σ(−2u)` computed directly.
+- **Reason:** the literal `1 + tanh(u)` cancels badly when tanh(u) ≈ −1
+  (x below about −4). In the `REAL=double` build, GELU and its derivative
+  near x = −6 were only accurate to about 1e-7 relative. The P3.1
+  finite-difference check (§10, rel err < 1e-6) failed there at 1.25e-4.
+  With the σ form the worst error is 8.7e-10. The function is unchanged
+  (same math, same §6.3 definition), so the backward is still its exact
+  derivative.
+- **Impact:** forward values change only at the rounding level. All
+  forward tests still pass, including the PyTorch golden (loss rel err 0 /
+  1.1e-16 in double). Note for CUDA (Phase B): use the same σ form; a
+  literal-tanh kernel would agree only within the §10 equivalence
+  tolerances, not bit for bit. Also, gradient checks of elementwise ops
+  evaluate only the perturbed element's term of the scalar loss; that is
+  mathematically identical and avoids rounding noise from unrelated terms.
+
+## 2026-11-18: README.md written early and kept current every task
+
+- **Change:** `README.md` exists now (after P3.1) rather than first appearing
+  in P7.3. CLAUDE.md §2 and §11 now require every task that changes anything
+  a user runs or configures to update the README in the same change. The
+  README may only list commands that have actually been run, its Status line
+  tracks phase milestones, and the §2 final report says what changed in it.
+- **Reason:** teammates need working build, data and tool instructions
+  during development, not only at hand-off. Updating the README task by task
+  keeps it accurate, rather than reconstructing it from memory at the end.
+- **Impact:** ROADMAP P7.3 changes from writing the README to completing
+  it: adding exact reproduction commands for a smoke run, a `small` run and
+  a benchmark, the machine spec table, and the clean-clone timing in its DoD.
+  The ROADMAP edit itself is proposed separately. No effect on code, formats
+  or the CUDA/MPI builds.

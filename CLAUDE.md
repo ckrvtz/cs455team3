@@ -26,7 +26,14 @@ Read this file fully at the start of every session. Then read the relevant secti
 - **Tests first for numerics.** For any op or model change, write or update the test (FD check, golden compare, or hand-computed case) in the same change as the implementation.
 - **Do not edit golden files** (`tests/golden/*`) or contract headers (`ops.h`, `backend.h`, `comm.h`, `layout.h`, checkpoint/log formats) to make a test pass. If a contract must change, stop, explain the CUDA/MPI impact, propose the change, and wait for approval. Approved changes get an entry in `docs/DECISIONS.md` (date, change, reason, impact on other builds).
 - **Keep diffs small and reviewable.** Prefer new files over giant rewrites. Do not reformat files you did not need to touch.
-- **Final report format** (end of every task, short): what was implemented (files), test commands run and results, deviations or decisions, open issues, suggested next task. No long recaps.
+- **Keep `README.md` current.** Any task that adds or changes something a user runs or configures (an app, a command-line option, a `make` target or variable, a script, a config key or preset, a required tool or dependency, or a user-visible output file) updates `README.md` in the same change. The README describes only what exists and has been run: every command in it must have been executed successfully in this task or an earlier one. Update the **Status** line when a phase milestone lands. Keep it concise; details belong in file header comments, `ROADMAP.md`, or `docs/`.
+- **`docs/STATUS.md` is updated only on request.** Do not touch it during normal tasks. When asked to update it ("update STATUS.md with the latest additions"):
+  1. Read its **Last updated** line (date, last ROADMAP task, commit) and review everything added since then (`git log <commit>..HEAD`, `git diff --stat <commit>..HEAD`, `docs/DECISIONS.md`).
+  2. Keep the existing structure (build/docs, core infrastructure, data pipeline, model, tests, offline tools, next). Add new files and features to the right section, one line each: what the file or feature does, not how. Remove or reword anything that is no longer true.
+  3. Only state results that were actually measured and are recorded elsewhere (test output, `DECISIONS.md`, committed CSVs); never estimate or round up.
+  4. Update the summary paragraph, the test count, the **Next** section, and the **Last updated** line (date, last completed task, current commit).
+  5. Commit it on its own (message: "Update STATUS.md through <task>"), separate from any task's code.
+- **Final report format** (end of every task, short): what was implemented (files), test commands run and results, README changes (or "none needed"), deviations or decisions, open issues, suggested next task. No long recaps.
 
 ---
 
@@ -138,6 +145,7 @@ These exist so CUDA and MPI versions can be added without rewriting the model. S
 - [ ] No Python, new dependency, or contract change introduced without approval
 - [ ] File header comments describe shapes, semantics, and math for any new op
 - [ ] `THIRD_PARTY.md` / `docs/DECISIONS.md` updated if applicable
+- [ ] `README.md` updated for any user-facing change (or confirmed unaffected), with every new or changed command actually run
 - [ ] Final report written in the §2 format
 
 ---
