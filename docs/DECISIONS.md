@@ -556,3 +556,63 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   the finite-difference gradcheck cannot resolve.
 - **Impact:** CUDA/MPI builds compare against the same files (cross-version
   protocol, §10).
+
+## 2026-11-18: AdamW golden trajectory; key-bias exception extended (P4.1), approved
+
+- **Change:**
+  - **Generator:** `dev_only/gen_golden.py` takes an optional third output,
+    `<case>_adamw.bin`. It runs 5 steps of `torch.optim.AdamW` (float64)
+    from the same init weights and batch: decay group = 2-D weights except
+    `wpe`, global-norm clip 1.0, and the §2.3 schedule set by hand each step.
+    It writes the hyperparameters, the per-step loss, the pre-clip grad norm,
+    the lr, and every final parameter. Golden settings: lr 1e-3,
+    min_lr_frac 0.1, warmup 2, max_steps 5, betas (0.9, 0.95), eps 1e-8,
+    wd 0.1. Files: `tests/golden/tiny_adamw.bin` (58 KB) and
+    `tiny_untied_x10_adamw.bin` (62 KB). The `_fwd.bin` files are unchanged.
+  - **Test:** `tests/test_golden.cpp` runs the C++ step loop
+    (`clip_grad_norm` → `lr_at` → `adamw_update`) and checks:
+    - step losses rel < 1e-5;
+    - grad norms rel < 1e-4;
+    - lr rel < 1e-14;
+    - final params per-tensor rel-L2 < 1e-4.
+  - **Key-bias exception extended:** the structural-zero exception above
+    (gradcheck, 2026-11-18) is extended to this one comparison, and the
+    closed list stays closed otherwise. For each `qkv_b`, only the query and
+    value slices go through the rel-L2 check. The key slice `[C, 2C)` must
+    instead satisfy `max|value| ≤ steps · lr` (= 5e-3), the largest
+    distance Adam can move a parameter from 0 in 5 steps.
+  - **Golden lr is 1e-3, not 1e-2.**
+- **Reasons:**
+  - **Key slice:** its true gradient is exactly 0 (softmax shift
+    invariance), so PyTorch's float64 values stay at ~1e-15. Our float
+    gradient is rounding noise of ~1e-9, and Adam normalizes it by
+    `sqrt(v)`, which turns noise into steps of size ~lr. A rel-L2 against
+    ~0 cannot pass and says nothing about correctness.
+  - **Golden lr:** at lr 1e-2 the ×10-weight untied case diverges
+    chaotically in float: the step-5 loss rel error was 2.5e-4, and several
+    biases sat at 1.1–1.5e-4. At 1e-3 the trajectory is well conditioned,
+    so the comparison tests the optimizer, not float sensitivity.
+- **Measured** (`make test`, `make debug`, `make test REAL=double`; worst
+  values):
+
+  | Build | case | step loss rel | grad-norm rel | params rel-L2 | key max \|value\| |
+  |---|---|---|---|---|---|
+  | float | tiny | 1.0e-8 | 5.7e-8 | 9.44e-7 | 6.8e-7 |
+  | float | untied_x10 | 6.7e-7 | 3.7e-5 | 1.71e-5 | 3.8e-4 |
+  | debug | tiny | 8.4e-9 | 4.8e-8 | 6.61e-7 | 4.4e-7 |
+  | debug | untied_x10 | 4.2e-7 | 1.6e-5 | 1.41e-5 | 5.1e-4 |
+  | double | tiny | 1.3e-16 | 1.5e-15 | 8.92e-16 | 5.7e-16 |
+  | double | untied_x10 | 5.3e-15 | 2.0e-13 | 5.86e-14 | 8.5e-13 |
+
+  The double build matches PyTorch to rounding on every tensor, including
+  the key slice. This validates the update rule, the clip, the decay mask
+  and the schedule exactly.
+- **Mutation evidence:** the golden AdamW tests failed on each of four
+  planted bugs:
+  - dropped second-moment bias correction;
+  - decay applied to every tensor;
+  - cosine without the min-lr floor;
+  - clip returning the post-clip norm.
+- **Impact:** CUDA/MPI builds compare against the same files with the same
+  key-slice rule. The `adamw_step` signature in `ops.h` is new (not a change
+  to an existing contract).

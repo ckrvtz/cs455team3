@@ -79,3 +79,12 @@ produces the logits. `sum_reduce` is a sequential double-precision sum
 No special optimization. One pass per row: `dlogits += probs·(1/N)` over the
 non-target entries (contiguous, vectorized) and `(p_t − 1)·(1/N)` for the
 target. Memory-bound; it reads `probs` once.
+
+## sumsq_reduce / scale_inplace / adamw_step (`src/ops/optim_cpu.cpp`), P4.1
+
+No special optimization. `sumsq_reduce` is a sequential double-precision
+sum (deterministic, scalar). `scale_inplace` and `adamw_step` are
+element-wise loops over each parameter tensor; they auto-vectorize because
+`sqrt` and division are plain IEEE operations. The bias corrections are
+computed once per call in double. All three are memory-bound and run once
+per step, which is negligible next to the matmuls.

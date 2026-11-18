@@ -8,8 +8,9 @@ are in [`CLAUDE.md`](CLAUDE.md).
 
 **Status (Phase A, serial):** the data pipeline (download, tokenizer, dataset
 preparation, loader), the full forward and backward passes, and the
-full-model gradient check are done. The optimizer, training, generation and
-benchmarking are not built yet, so there is no `train` command.
+full-model gradient check, and the AdamW optimizer with its LR schedule
+(library code, no command) are done. Training, generation and benchmarking
+are not built yet, so there is no `train` command.
 
 ## Requirements
 

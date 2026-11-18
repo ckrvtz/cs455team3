@@ -11,7 +11,8 @@
 //   - output buffers must not overlap input buffers;
 //   - layouts are row-major (§6.2). Sizes that can exceed 2^31 are size_t.
 //
-// This file grows task by task. Declared so far: P2.1-P2.4 forward ops, P3.1-P3.4 backward ops.
+// This file grows task by task. Declared so far: P2.1-P2.4 forward ops, P3.1-P3.4 backward ops,
+// P4.1 optimizer ops.
 #pragma once
 
 #include <cstddef>
@@ -91,6 +92,19 @@ void softmax_xent_backward(real_t* dlogits, const real_t* probs, const int32_t* 
 
 // Sum of n values accumulated in double, returned to the host (used for the mean loss).
 double sum_reduce(const real_t* x, size_t n);
+
+// Optimizer / clipping (P4.1).
+// Sum of squares of n values accumulated in double, returned to the host
+// (global gradient norm = sqrt of this over the flat grads buffer).
+double sumsq_reduce(const real_t* x, size_t n);
+// x[i] *= s for i < n (in place).
+void scale_inplace(real_t* x, real_t s, size_t n);
+// Decoupled AdamW update of one tensor, in place on p, m, v (step is 1-based):
+//   m = b1 m + (1-b1) g;   v = b2 v + (1-b2) g^2
+//   p -= lr * ( (m / (1-b1^step)) / (sqrt(v / (1-b2^step)) + eps) + weight_decay * p )
+// weight_decay = 0 for tensors that are not decayed (the caller applies the mask).
+void adamw_step(real_t* p, const real_t* g, real_t* m, real_t* v, size_t n, real_t lr, real_t beta1, real_t beta2,
+                real_t eps, real_t weight_decay, int step);
 
 }  // namespace ops
 }  // namespace tslm
