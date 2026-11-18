@@ -409,5 +409,5 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   backstop for small gradients. CUDA/MPI builds use the §10 cross-version
   equivalence protocol, not this check. The per-op FD tests (P3.1–P3.4) keep
   their 2-point differences; they all pass, and switch to this stencil only
-  if one of them needs it. The ROADMAP §10 "Gradcheck" row still names the
-  old method and should be updated to match.
+  if one of them needs it. The ROADMAP §10 "Gradcheck" row was updated to
+  name the new method.

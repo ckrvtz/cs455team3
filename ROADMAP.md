@@ -356,7 +356,7 @@ for step in 1..max_steps:
 | Layer | Test | Pass criterion |
 |---|---|---|
 | Unit: each op | Forward vs hand-computed tiny case; backward vs finite difference | see below |
-| Gradcheck | Tiny model (`L=2,C=16,NH=2,V=32,T=8,B=2`), `real_t=double`, central difference ε=1e-5, up to 20 random indices per tensor **plus** first/last index | max relative error `|a−n|/max(|a|,|n|,1e-8)` < 1e-6 for all sampled entries |
+| Gradcheck | Tiny model (`L=2,C=16,NH=2,V=32,T=8,B=2`), `real_t=double`, 4th-order 5-point central difference, h = 1e-3 (see `docs/DECISIONS.md`, 2026-11-18), up to 20 random indices per tensor **plus** first/last index | max relative error `|a−n|/max(|a|,|n|,1e-8)` < 1e-6 for all sampled entries |
 | Golden (PyTorch, offline) | `dump_init` writes init weights + a fixed batch; `dev_only/gen_golden.py` builds an architecturally identical PyTorch model in float64, writes loss, a logits slice, and every tensor's gradient to `tests/golden/*.bin`; C++ test loads them with **no Python at test time** | float32 serial vs float64 golden: loss rel err < 1e-5; grads per-tensor rel-L2 err < 1e-4; after 5 AdamW steps params rel-L2 < 1e-4 |
 | Init loss | Fresh `base` model on real data | initial loss within ±0.15 of ln(10000) ≈ 9.21 |
 | Overfit | `smoke` config, one fixed batch, 300 steps | loss < 0.1 |
