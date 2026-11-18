@@ -208,3 +208,26 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   which the sharding-equivalence test checks.
 - **Impact:** Phase C ranks open the same file with `(rank, world_size)`.
   The checkpoint (P4.3) stores `LoaderState`.
+
+## 2026-11-18: Gradient zeroing is timed under `bwd` (resolves the open `zero` phase question)
+
+- **Change:** each training step zeroes `grads` once, as its **first** action
+  (CLAUDE.md §4.7 order: `zero_grads → forward → backward →
+  comm_allreduce_avg → clip → AdamW`). The time is charged to `Phase::Bwd`
+  (`t.begin(Bwd); zero(grads); t.end(Bwd);`). `PhaseTimer` sums repeated
+  begin/end pairs, so `bwd_ms` = zeroing + backward. Any activation-gradient
+  buffers that backward accumulates into (P3.5) are zeroed under `bwd` as
+  well. ROADMAP §9's separate `t.zero` phase, placed between forward and
+  backward, is superseded: there is no `zero` phase and no `zero_ms` column.
+- **Reason:** `log.csv`, the bench CSV and `PhaseTimer` (data, fwd, bwd,
+  comm, opt) stay frozen and unchanged. The phase columns still sum to
+  `step_ms`, so benchmarks stay honest. Zeroing exists only because backward
+  accumulates (`+=`), so it belongs with backward. Running it before forward
+  instead of after is numerically identical, because forward never touches
+  `grads`.
+- **Impact:** none on loss, gradients or parameters. All four builds must
+  time zeroing the same way, so their `bwd_ms` values stay comparable. If
+  P3.5/P7.2 profiling shows activation-gradient zeroing is a significant part
+  of `bwd_ms`, record the split in `docs/PROFILE.md` instead of adding a
+  column. Making backward overwrite on first write instead of zeroing would
+  change the `+=` convention and needs approval.
