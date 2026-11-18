@@ -1347,3 +1347,31 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   - Neither can be proven now. The corrected numbers and both safeguards
     still stand: the clean-rebuild procedure, and the target stamp, which
     still prevents mixing objects from different compilers or flags.
+
+## 2026-11-18: P5.2 supplementary gap measurement; P6.1 generation check; samples for the P6.3 pilot
+
+- **Supplementary measurement** (chosen by the team after criterion 2
+  missed; method fixed before computing):
+  - **Tool:** a new `bin/eval_loss` (a thin app around the tested
+    `evaluate()`), which reproduced the run's final val_loss exactly
+    (2.64546051) from the returned checkpoint on this machine.
+  - **Result:** final model on the first 20 train batches = 2.8296. Gap to
+    final val = +0.184 > 0.1: **not met**.
+- **Diagnostic** (after the miss, recorded as such): on 100 batches each,
+  train 2.7815 vs val 2.7668 (gap +0.015). The fixed 20-batch validation
+  slice is about 0.12 easier than the broader validation set, so the
+  criterion-2 gap is a property of that slice, not of the model.
+- **Recommendation to the team:**
+  - Accept the plateau with this evidence, rather than start a longer run
+    (which would lower train loss and is unlikely to close a val-below-train
+    gap).
+  - If the criterion is used again, define it on more batches, or on
+    `evaluate()` of fixed train and val batches of equal size.
+  - Verdict pending.
+- **P6.1:** greedy generation from the final checkpoint is byte-identical
+  across runs, and the continuations are mostly grammatical TinyStories-style
+  text (`docs/RUNS.md`). Both DoD points are met.
+- **P6.2/P6.3:** `docs/runs/small_p52/samples_2400.txt` is the pilot set
+  (11 KB, byte-identical on rerun). The pilot itself needs two human raters.
+- **Checkpoint:** `runs/small_p52/ckpt_latest.bin` (20.5 MB) stays
+  gitignored.

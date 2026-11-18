@@ -245,6 +245,19 @@ bin/train_serial --config configs/smoke.cfg --ckpt_every 100 --resume runs/smoke
   token file is read at random positions, and those reads are slow until the
   file is in the OS page cache; the extra time shows up in `data_ms`.
 
+### Loss of a checkpoint on fixed batches
+
+```bash
+bin/eval_loss --ckpt runs/small_p52/ckpt_latest.bin --data data/p52/val.bin                   # reproduces the run's final val_loss
+bin/eval_loss --ckpt runs/small_p52/ckpt_latest.bin --data data/p52/train.bin --batches 100   # final model on fixed training data
+```
+
+- **What it computes:** the validation pass of training, forward only, on
+  the first `--batches` batches of any token file, in file order.
+- **Defaults:** `--batches 20`, `--batch_size 32`, `--seq_len` = the model's
+  context.
+- **Output:** loss, perplexity and token count.
+
 ## Generation
 
 ```bash

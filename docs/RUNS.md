@@ -135,3 +135,57 @@ clean-clone verification run (Xeon @ 2.30GHz with AVX-512, g++ 13.3.0,
 2026-11-18, P7.3), bit for bit in the printed digits. That is 108 logged
 values (train loss, val loss, lr, grad norm), all identical to 9 significant
 digits.
+
+### Supplementary train/val gap measurement (team decision after criterion 2 missed)
+
+- **Method,** fixed before computing:
+  - the final checkpoint (step 2400);
+  - the first 20 batches of `data/p52/train.bin` in file order (163,840
+    tokens: same size and rule as the validation set);
+  - the same `evaluate()` pass, via `bin/eval_loss`;
+  - pass mark |train_eval − final val| ≤ 0.1.
+- **Sanity check:** the same tool on `data/p52/val.bin` reproduced the run's
+  final val_loss exactly (2.64546051), on a different machine.
+
+| Measurement | Loss | Gap to final val 2.6455 | Result |
+|---|---|---|---|
+| Final model, first 20 train batches | 2.8296 | +0.184 | **not met** |
+
+**Diagnostic** (decided after seeing the miss; it does not replace the
+result above): the same checkpoint on 100 batches (819,200 tokens) of each
+file.
+
+| Batches | Train loss | Val loss | Gap |
+|---|---|---|---|
+| 20 (the fixed sets) | 2.8296 | 2.6455 | +0.184 |
+| 100 | 2.7815 | 2.7668 | +0.015 |
+
+- **Reading:** the fixed 20-batch validation set (the first 640 sequences of
+  the official validation file) is about 0.12 nats easier than the first
+  100 batches. So the gap in criterion 2 comes from that slice, not from a
+  train/val difference in the model.
+- **Consequence:** a longer run would lower train loss further and is
+  unlikely to close a gap of this sign.
+- **Other implication:** the logged `val_loss` of every run (always on the
+  same 20 batches) underestimates the broader validation loss of this model
+  by about 0.12. It remains comparable across runs and builds, which is
+  its purpose.
+- **Status:** the P5.2 plateau verdict remains with the team.
+
+### Generation and prompt samples from the final checkpoint (P6.1, P6.2)
+
+- **Greedy:** `bin/generate --ckpt runs/small_p52/ckpt_latest.bin --vocab_map
+  data/p52/vocab_map.txt --prompt "Once upon a time" --greedy 1 --max_new 80`
+  gives byte-identical output on repeated runs: "Once upon a time, there was
+  a little girl named Lily. She loved to play outside in the park. One day,
+  she saw a big, shiny rock. She wanted to play with it, but it was too big
+  and it was too fast. ..."
+- **Sampled** (temperature 0.8, seeds 1–3): fluent TinyStories-style text,
+  mostly grammatical, with occasional errors ("there was a big, a little
+  girl"; "Lily … He was three years old") and weak long-range consistency.
+- **Fixed prompts:** `docs/runs/small_p52/samples_2400.txt`, from `bin/eval`
+  (byte-identical on rerun). The factual and reasoning prompts are mostly
+  answered wrongly ("opened the pot", "now she had a big spoon"), which the
+  rubric's sense scale is meant to capture.
+- **Scoring pilot (P6.3):** this file is the pilot set. It needs two human
+  raters (`eval/RUBRIC.md`).
