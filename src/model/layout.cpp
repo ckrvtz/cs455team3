@@ -149,6 +149,15 @@ ActLayout make_act_layout(const ModelConfig& cfg, int B, int T) {
     A.logits = b.add("logits", {N, V});
     A.probs = b.add("probs", {N, V});
     A.losses = b.add("losses", {N});
+    // Backward buffers, after all forward tensors (forward offsets unchanged).
+    A.d_logits = b.add("d_logits", {N, V});
+    A.d_x = b.add("d_x", {N, C});
+    A.d_ln = b.add("d_ln", {N, C});
+    A.d_atty = b.add("d_atty", {N, C});
+    A.d_qkv = b.add("d_qkv", {N, 3 * C});
+    A.d_fch_gelu = b.add("d_fch_gelu", {N, 4 * C});
+    A.d_fch = b.add("d_fch", {N, 4 * C});
+    A.att_scratch = b.add("att_scratch", {Bs, NH, Ts, Ts});
     A.num_elems = b.end();
     return A;
 }

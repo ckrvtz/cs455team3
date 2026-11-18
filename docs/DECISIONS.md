@@ -411,3 +411,50 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   their 2-point differences; they all pass, and switch to this stencil only
   if one of them needs it. The ROADMAP §10 "Gradcheck" row was updated to
   name the new method.
+
+## 2026-11-18: Backward buffers and model_backward wiring (P3.5)
+
+- **Change:**
+  - **Activation layout:** `make_act_layout` appends 8 backward buffers
+    **after** all forward tensors, so forward offsets are unchanged. They are
+    shared by all layers: `d_logits [N,V]`, `d_x`/`d_ln`/`d_atty [N,C]`,
+    `d_qkv [N,3C]`, `d_fch_gelu`/`d_fch [N,4C]`, `att_scratch [B,NH,T,T]`.
+    `ActLayout` gains matching index fields, additive as planned in the
+    P0.4 entry.
+  - **New arena sizes at B=32, T=256** (from `make test`): `base` 1962.1 MB
+    (was 1473.6), `small` 1241.8 MB, `smoke` 15.2 MB at B=4, T=32. `base`
+    stays within the §13 estimate of 1.5–2 GB. `d_logits` gets its own
+    buffer rather than reusing `logits`, so `model_logits()` stays valid
+    after backward. Reusing it would save ~330 MB at `base` if ever needed.
+  - **`model_backward(Model*)`:** uses the last forward's saved activations
+    and its tokens/targets pointers, which `Model` keeps. The caller must
+    keep those buffers alive until backward has run.
+  - **Residual handling:** one `d_x` buffer carries the residual-stream
+    gradient top to bottom. Each residual add needs no extra op: `d_x` is
+    the branch's `dout`, and the branch's LayerNorm backward then adds back
+    into `d_x`.
+  - **Zeroing:** activation-gradient buffers are zeroed inside
+    `model_backward` right before each accumulating write. That time counts
+    toward `bwd`, per the zero-phase decision. Parameter gradients
+    accumulate and are zeroed by the training loop.
+  - **Tied head:** `grads[wte]` receives the head contribution (matmul
+    backward) and then the embedding contribution.
+- **Testing notes for P3.6:**
+  1. **Stencil evaluation order:** the 5-point stencil is evaluated
+     differences-first, `[8(L(h)−L(−h)) − (L(2h)−L(−2h))]/(12h)`. Subtracting
+     nearly equal losses is exact, so an entry the loss does not depend on
+     (e.g. untied `wte` rows of absent tokens) yields exactly 0. The summed
+     form `−L(2h)+8L(h)−8L(−h)+L(−2h)` left ~1e-13 of rounding, which failed
+     the 1e-8 floor.
+  2. **Key-bias gradients are structurally zero.** The key-bias slice of
+     every `qkv_b` has exactly zero true gradient: shifting all keys equally
+     changes every score of a query by the same amount, and softmax ignores
+     that. Finite differences cannot confirm 0 to the §10 floor (loss
+     rounding alone is ~1e-15). Measured: |d key-bias| / max|d q/v-bias| is
+     ≤ 7e-17 in double and ≤ 2e-8 in float. These entries are verified by a
+     direct check (`structurally_zero_gradients`) and excluded from FD
+     sampling. P3.6 should treat them the same way, as a documented
+     structural-zero case under the "case by case" clause of the gradcheck
+     decision.
+- **Impact:** CUDA/MPI use the same layout, so the arena grows the same way
+  on device. `model_backward` calls only `ops::` functions.

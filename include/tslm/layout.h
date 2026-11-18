@@ -35,8 +35,19 @@
 //   res3 [N,C]                              layer output: res2 + fcproj
 // plus "encoded" [N,C] (embedding output = layer-0 input), lnf/lnf_mean/
 // lnf_rstd, logits [N,V], probs [N,V], losses [N]. Integer token buffers
-// are not in this real_t arena. Backward scratch buffers are appended by the
-// backward pass task (P3.5); appending entries does not change this API.
+// are not in this real_t arena.
+//
+// BACKWARD BUFFERS (appended after every forward tensor, so forward offsets
+// are unchanged). They are shared by all layers; model_backward zeroes each
+// one before an accumulating op writes it:
+//   d_logits [N,V]        dL/dlogits
+//   d_x [N,C]             gradient of the residual stream (top to bottom)
+//   d_ln [N,C]            gradient w.r.t. a LayerNorm output (lnf, ln2, ln1)
+//   d_atty [N,C]          gradient w.r.t. the attention output (pre proj)
+//   d_qkv [N,3C]          gradient w.r.t. qkv
+//   d_fch_gelu [N,4C]     gradient w.r.t. the GELU output
+//   d_fch [N,4C]          gradient w.r.t. the GELU input
+//   att_scratch [B,NH,T,T] workspace for attention_backward
 //
 // PADDING. Every tensor offset is a multiple of LAYOUT_PAD_ELEMS = 16
 // elements: 64 bytes for float, 128 for double. Allocations come from
@@ -99,6 +110,9 @@ struct ActLayout {
     int encoded = -1, lnf = -1, lnf_mean = -1, lnf_rstd = -1;
     int logits = -1, probs = -1, losses = -1;
     std::vector<LayerActIdx> layers;
+    // Backward buffers (shared across layers; see above).
+    int d_logits = -1, d_x = -1, d_ln = -1, d_atty = -1, d_qkv = -1;
+    int d_fch_gelu = -1, d_fch = -1, att_scratch = -1;
 
     const TensorDesc& operator[](int i) const { return tensors.at(static_cast<size_t>(i)); }
     int find(const std::string& name) const;
