@@ -11,7 +11,7 @@
 //   - output buffers must not overlap input buffers;
 //   - layouts are row-major (§6.2). Sizes that can exceed 2^31 are size_t.
 //
-// This file grows task by task. Declared so far: P2.1-P2.4 forward ops, P3.1-P3.3 backward ops.
+// This file grows task by task. Declared so far: P2.1-P2.4 forward ops, P3.1-P3.4 backward ops.
 #pragma once
 
 #include <cstddef>
@@ -85,6 +85,9 @@ void attention_backward(real_t* dqkv, real_t* scratch, const real_t* dout, const
 // Per-position losses only; the host reduces them with sum_reduce.
 void softmax_xent_forward(real_t* probs, real_t* losses, const real_t* logits, const int32_t* targets, int N,
                           int V);
+// Gradient of the MEAN loss (1/N) sum_n losses[n] w.r.t. logits, ACCUMULATED:
+//   dlogits[n,v] += (probs[n,v] - 1[v == targets[n]]) / N
+void softmax_xent_backward(real_t* dlogits, const real_t* probs, const int32_t* targets, int N, int V);
 
 // Sum of n values accumulated in double, returned to the host (used for the mean loss).
 double sum_reduce(const real_t* x, size_t n);

@@ -73,3 +73,9 @@ the double row sum run as scalar code: vectorizing them would need
 The op is memory/exp-bound and much cheaper than the head matmul that
 produces the logits. `sum_reduce` is a sequential double-precision sum
 (deterministic).
+
+## softmax_xent_backward (`src/ops/softmax_xent_cpu.cpp`), P3.4
+
+No special optimization. One pass per row: `dlogits += probs·(1/N)` over the
+non-target entries (contiguous, vectorized) and `(p_t − 1)·(1/N)` for the
+target. Memory-bound; it reads `probs` once.
