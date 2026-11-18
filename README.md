@@ -8,9 +8,9 @@ are in [`CLAUDE.md`](CLAUDE.md).
 
 **Status (Phase A, serial):** the data pipeline (download, tokenizer, dataset
 preparation, loader), the full forward and backward passes, and the
-full-model gradient check, and the AdamW optimizer with its LR schedule
-(library code, no command) are done. Training, generation and benchmarking
-are not built yet, so there is no `train` command.
+full-model gradient check, the AdamW optimizer with its LR schedule, and the
+training loop (`train_serial`, training loss only) are done. Validation,
+checkpoints, generation and benchmarking are not built yet.
 
 ## Requirements
 
@@ -93,6 +93,28 @@ plus `--key value` overrides. Unknown keys are errors.
 | `small` | 2 | 128 | 4 | 256 | 1,709,568 |
 | `base` | 4 | 256 | 8 | 256 | 5,785,088 |
 
+## Training
+
+```bash
+bin/train_serial --config configs/smoke.cfg               # 200 steps of the tiny smoke model
+bin/train_serial --config configs/smoke.cfg --max_steps 50 --run_name try1
+```
+
+- **Outputs** go to `runs/<run_name>/` (`--out_dir` changes `runs`):
+  - `manifest.txt`: date, git hash, build, compiler flags, CPU, then the full
+    resolved config. `--config runs/<run_name>/manifest.txt` reruns the same config.
+  - `log.csv`: one row at step 1, every `log_every` steps and at the end:
+    loss, lr, grad norm, tokens/s, and per-step milliseconds for data,
+    forward, backward, comm and optimizer.
+
+  Rerunning a run name overwrites its files, with a warning.
+- **Data:** training reads `data/train.bin` (`--train_data` to change it).
+- **Not written yet:** the `val_loss`/`val_ppl` columns stay empty and no
+  checkpoints are written. The program says so when it starts.
+- **Timing:** the first run after a reboot can be much slower. The 927 MB
+  token file is read at random positions, and those reads are slow until the
+  file is in the OS page cache; the extra time shows up in `data_ms`.
+
 ## Golden test data (developers only)
 
 Tests compare against small reference files committed in `tests/golden/`;
@@ -111,7 +133,7 @@ The PyPI `torch` wheel for Linux also installs about 2.5 GB of CUDA libraries.
 
 ```
 include/tslm/   public headers (ops.h, model.h, layout.h, backend.h, comm.h, ...)
-src/            library: common/ backend/ comm/ ops/ model/ data/
+src/            library: common/ backend/ comm/ ops/ model/ optim/ data/ train/
 apps/           command-line tools (thin main()s)
 tests/          unit tests (test_*.cpp) and golden data
 configs/        presets       scripts/  data download

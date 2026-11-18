@@ -1,0 +1,172 @@
+// train.cpp: the training loop (ROADMAP §9). See include/tslm/train.h for
+// the step order, logging cadence and outputs.
+#include "tslm/train.h"
+
+#include <sys/stat.h>
+
+#include <cmath>
+#include <cstdio>
+#include <vector>
+
+#include "tslm/backend.h"
+#include "tslm/comm.h"
+#include "tslm/common.h"
+#include "tslm/dataset.h"
+#include "tslm/logging.h"
+#include "tslm/optim.h"
+#include "tslm/timer.h"
+
+namespace tslm {
+
+void check_step_finite(int step, double loss, double grad_norm) {
+    CHECK(std::isfinite(loss), "step %d: non-finite training loss %g", step, loss);
+    CHECK(std::isfinite(grad_norm), "step %d: non-finite gradient norm %g", step, grad_norm);
+}
+
+namespace {
+
+bool file_exists(const std::string& p) {
+    struct stat st;
+    return ::stat(p.c_str(), &st) == 0;
+}
+
+void write_text_file(const std::string& path, const std::string& text) {
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    CHECK(f, "cannot create %s", path.c_str());
+    const bool ok = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+    CHECK(std::fclose(f) == 0 && ok, "write to %s failed", path.c_str());
+}
+
+}  // namespace
+
+TrainSummary train_run(const Config& cfg) {
+    std::string err;
+    CHECK(config_validate(cfg, &err), "%s", err.c_str());
+    const TrainConfig& tc = cfg.train;
+    const int rank = comm_rank(), world = comm_size();
+    const bool lead = rank == 0;
+    const int B = tc.batch_size, T = tc.seq_len;
+
+    DataLoader loader;
+    CHECK(loader.open(tc.train_data, B, T, tc.seed, rank, world, &err), "%s", err.c_str());
+    CHECK(loader.vocab_size() == static_cast<uint32_t>(cfg.model.vocab_size),
+          "%s has vocab_size %u but the model has vocab_size %d", tc.train_data.c_str(), loader.vocab_size(),
+          cfg.model.vocab_size);
+
+    Model* model = model_create(cfg.model, B, T);
+    model_init_weights(model, tc.seed);
+    // Every rank starts from rank 0's weights (no-op in serial; §4.3).
+    comm_broadcast(model->params, model->params_layout.num_params_padded, 0);
+
+    // Host batch buffers (token ids are host data) and their device copies.
+    const size_t ntok = size_t(B) * size_t(T);
+    std::vector<int32_t> x_host(ntok), y_host(ntok);
+    int32_t* x_dev = static_cast<int32_t*>(dev_malloc(ntok * sizeof(int32_t)));
+    int32_t* y_dev = static_cast<int32_t*>(dev_malloc(ntok * sizeof(int32_t)));
+    const size_t grad_bytes = model_param_bytes(model);
+
+    const std::string dir = run_dir(cfg);
+    CsvLog csv;
+    if (lead) {
+        make_dirs(dir);
+        if (file_exists(dir + "/log.csv")) log_warn("overwriting the existing run in %s", dir.c_str());
+        write_text_file(dir + "/manifest.txt",
+                        manifest_text(cfg, model, loader.num_tokens(), loader.steps_per_epoch(), world));
+        CHECK(csv.open(dir + "/log.csv", &err), "%s", err.c_str());
+        log_info("run %s: %s", dir.c_str(), model_summary(model).c_str());
+        log_info("data %s: %llu tokens, %llu steps/epoch at global batch %d x T=%d; %d steps", tc.train_data.c_str(),
+                 static_cast<unsigned long long>(loader.num_tokens()),
+                 static_cast<unsigned long long>(loader.steps_per_epoch()), B * world, T, tc.max_steps);
+        log_info("note: validation (P4.4) and checkpoints (P4.3) are not implemented yet: val_loss/val_ppl stay "
+                 "empty and no checkpoint files are written");
+    }
+
+    const uint64_t tokens_per_step = uint64_t(ntok) * uint64_t(world);
+    PhaseTimer timer;
+    TrainSummary sum;
+    double interval_ms = 0.0;
+    int interval_steps = 0;
+    const double loop_t0 = now_seconds();
+
+    for (int step = 1; step <= tc.max_steps; ++step) {
+        const double t0 = now_seconds();
+
+        timer.begin(Phase::Data);
+        loader.next_batch(x_host.data(), y_host.data());
+        copy_h2d(x_dev, x_host.data(), ntok * sizeof(int32_t));
+        copy_h2d(y_dev, y_host.data(), ntok * sizeof(int32_t));
+        timer.end(Phase::Data);
+
+        timer.begin(Phase::Bwd);  // grad zeroing is charged to bwd (DECISIONS 2026-11-18)
+        dev_memset(model->grads, 0, grad_bytes);
+        timer.end(Phase::Bwd);
+
+        timer.begin(Phase::Fwd);
+        double loss = model_forward(model, x_dev, y_dev, B, T);
+        timer.end(Phase::Fwd);
+
+        timer.begin(Phase::Bwd);
+        model_backward(model);
+        timer.end(Phase::Bwd);
+
+        timer.begin(Phase::Comm);
+        comm_allreduce_avg(model->grads, model->params_layout.num_params_padded);
+        comm_allreduce_sum_double(&loss, 1);
+        loss /= world;
+        timer.end(Phase::Comm);
+        check_step_finite(step, loss, 0.0);
+
+        timer.begin(Phase::Opt);
+        const double lr = lr_at(tc, step);
+        const double gnorm = clip_grad_norm(model, tc.grad_clip);
+        adamw_update(model, tc, step, lr);
+        timer.end(Phase::Opt);
+        check_step_finite(step, loss, gnorm);
+
+        const double step_ms = (now_seconds() - t0) * 1e3;
+        interval_ms += step_ms;
+        ++interval_steps;
+        sum.steps = step;
+        sum.tokens_seen = uint64_t(step) * tokens_per_step;
+        if (step == 1) sum.first_loss = loss;
+        sum.final_loss = loss;
+
+        if (step == 1 || step % tc.log_every == 0 || step == tc.max_steps) {
+            const double n = interval_steps;
+            LogRow r;
+            r.step = step;
+            r.tokens_seen = sum.tokens_seen;
+            r.train_loss = loss;
+            r.lr = lr;
+            r.grad_norm = gnorm;
+            r.tok_per_s = double(tokens_per_step) * n / (interval_ms / 1e3);
+            r.step_ms = interval_ms / n;
+            r.data_ms = timer.ms(Phase::Data) / n;
+            r.fwd_ms = timer.ms(Phase::Fwd) / n;
+            r.bwd_ms = timer.ms(Phase::Bwd) / n;
+            r.comm_ms = timer.ms(Phase::Comm) / n;
+            r.opt_ms = timer.ms(Phase::Opt) / n;
+            if (lead) {
+                csv.write(r);
+                log_info("step %6d/%d | loss %.4f | lr %.3e | gnorm %.3f | %.1f ms/step | %.0f tok/s", step,
+                         tc.max_steps, loss, lr, gnorm, r.step_ms, r.tok_per_s);
+            }
+            timer.reset();
+            interval_ms = 0.0;
+            interval_steps = 0;
+        }
+    }
+    sum.wall_s = now_seconds() - loop_t0;
+    if (lead) {
+        csv.close();
+        log_info("done: %d steps, %llu tokens, %.1f s; loss %.4f -> %.4f", sum.steps,
+                 static_cast<unsigned long long>(sum.tokens_seen), sum.wall_s, sum.first_loss, sum.final_loss);
+    }
+
+    dev_free(x_dev);
+    dev_free(y_dev);
+    model_free(model);
+    return sum;
+}
+
+}  // namespace tslm

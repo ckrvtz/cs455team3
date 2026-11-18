@@ -616,3 +616,47 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **Impact:** CUDA/MPI builds compare against the same files with the same
   key-slice rule. The `adamw_step` signature in `ops.h` is new (not a change
   to an existing contract).
+
+## 2026-11-18: Training loop details (P4.2)
+
+- **log.csv rows:** written at step 1, every `log_every` steps, and at the
+  last step.
+  - `train_loss`, `lr` and `grad_norm` are that step's values: deterministic,
+    so builds can be compared row by row (`%.9g`).
+  - The timing columns and `tok_per_s` are per-step means over the steps
+    since the previous row; `step_ms` is the wall time of the whole step.
+  - `tokens_seen` and `tok_per_s` count global tokens (B·T·world_size).
+  - The frozen columns are unchanged.
+- **Step body:** follows §9 with zeroing timed under `bwd` (decision above).
+  - The loss is averaged over ranks under `comm`
+    (`comm_allreduce_sum_double` / size).
+  - `check_step_finite` aborts on a non-finite loss before the optimizer and
+    on a non-finite grad norm after it (`clip_grad_norm` already refuses a
+    non-finite norm before scaling).
+  - After init, params are `comm_broadcast` from rank 0 (no-op in serial).
+- **manifest.txt:** metadata lines start with `#`, so the config parser
+  ignores them, followed by `config_to_text`. The manifest is therefore a
+  valid `--config` file that reproduces the run (checked by a test and by
+  hand).
+  - Recorded: UTC date, git hash, build, compiler and flags, device, CPU
+    model, cores, RAM, world size, parameter summary, train tokens and
+    steps per epoch.
+  - The Makefile passes the git hash (`-dirty` when tracked files differ
+    from HEAD) and the flags to `src/train/manifest.cpp` only, through a
+    stamp file, so a new commit recompiles one object.
+- **Existing run directory:** files are overwritten, with a warning.
+  Resuming is P4.3.
+- **Not yet produced:** validation (P4.4) and checkpoints (P4.3) are not
+  implemented. The loop leaves `val_loss`/`val_ppl` empty and writes no
+  checkpoint files, and it says so in its startup log instead of failing,
+  so the `smoke` preset (`eval_every=50`) can run. P4.3/P4.4 replace that
+  notice.
+- **Measured** (`bin/train_serial --config configs/smoke.cfg`, real
+  `data/train.bin`, release float, this container's 4-core Xeon @ 2.10GHz):
+  - first run: 54.5 s wall, of which 5.7 s user CPU; `data_ms` dominated
+    (page-cache misses on the 927 MB mmapped file);
+  - immediate rerun: 5.0 s, `data_ms` ≈ 0.03 ms/step;
+  - both runs: loss 9.2202 → 6.2963, with identical loss/lr/grad_norm
+    columns.
+- **Impact:** CUDA/MPI builds use the same loop file; only the
+  backend/comm shims differ.

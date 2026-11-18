@@ -118,6 +118,23 @@ $(BUILD_DIR)/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
+# ---- build facts for runs/<name>/manifest.txt (src/train/manifest.cpp only).
+# The git hash ("-dirty" if tracked files differ from HEAD, "unknown" outside a
+# git checkout) and the compiler flags go to that one object, so a new commit
+# rebuilds only it. build_info.txt is rewritten only when the facts change and
+# manifest.o depends on it.
+GIT_HASH    := $(shell h=$$(git rev-parse --short=12 HEAD 2>/dev/null) || h=unknown; \
+                 if [ "$$h" != unknown ] && ! git diff --quiet HEAD -- 2>/dev/null; then h=$$h-dirty; fi; echo $$h)
+BUILD_INFO  := $(GIT_HASH) | $(CXX) $(CXXFLAGS)
+BUILD_STAMP := $(BUILD_DIR)/build_info.txt
+# Skipped when the only goals are clean/dist (no build happens then).
+ifneq ($(if $(MAKECMDGOALS),$(filter-out clean dist,$(MAKECMDGOALS)),all),)
+$(shell mkdir -p $(BUILD_DIR); [ "$$(cat $(BUILD_STAMP) 2>/dev/null)" = '$(BUILD_INFO)' ] || printf '%s' '$(BUILD_INFO)' > $(BUILD_STAMP))
+endif
+MANIFEST_OBJ := $(BUILD_DIR)/src/train/manifest.o
+$(MANIFEST_OBJ): $(BUILD_STAMP)
+$(MANIFEST_OBJ): CPPFLAGS += -DTSLM_GIT_HASH='"$(GIT_HASH)"' -DTSLM_CXX='"$(CXX)"' -DTSLM_CXXFLAGS='"$(CXXFLAGS)"'
+
 $(LIB): $(LIB_OBJS)
 	@mkdir -p $(dir $@)
 	rm -f $@
