@@ -458,3 +458,38 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
      decision.
 - **Impact:** CUDA/MPI use the same layout, so the arena grows the same way
   on device. `model_backward` calls only `ops::` functions.
+
+## 2026-11-18: Gradcheck structural-zero exception for key biases (for P3.6), approved
+
+- **Change:** the full-model gradcheck (P3.6) samples `qkv_b` only from its
+  query `[0, C)` and value `[2C, 3C)` slices. The tensor's first index
+  (query) and last index (value) are still checked, as §10 requires. It
+  adds a **mandatory direct check** per layer, in the `REAL=double` build:
+  `max |d key-bias| ≤ 1e-12 · max |d query/value-bias|`, reported per layer.
+  If it fails, gradcheck fails. The ROADMAP §10 "Gradcheck" row was updated
+  to match.
+- **Reason:** the key-bias slice `[C, 2C)` has an exactly zero true gradient.
+  Adding the same vector to every key adds the same amount to all of a
+  query's scores, which softmax ignores. Finite differences cannot confirm
+  0 to the §10 floor (1e-8 relative, i.e. 1e-14 absolute): the perturbation
+  changes only forward rounding (~1e-15 in L), which gives ~1e-13 of
+  numeric noise after dividing by 12h. That would fail the criterion even
+  with a correct backward. The direct check is far stricter than FD could
+  be: P3.5 measured ≤ 7e-17 in double (`structurally_zero_gradients`).
+  This is the "case by case" resolution named in the gradcheck-stencil
+  decision above.
+- **Closed list:** the key-bias slice is the **only** exemption. Adding
+  another requires (1) a mathematical proof that the gradient is
+  structurally zero, (2) a direct check of it, and (3) team approval
+  recorded here. Every other sampled entry must pass the §10 criterion;
+  no generic noise-floor or tiny-gradient pass is allowed (rejected in the
+  stencil decision).
+- **Rejected alternatives:** a generic absolute tolerance for tiny
+  gradients (hides real small-gradient bugs); removing key biases from the
+  model (changes the §2.1/§2.2 contract, parameter counts and PyTorch
+  equivalence); relying on P3.7 alone (per-tensor rel-L2 could hide a
+  key-bias error); accepting recurring reported failures (trains people to
+  ignore gradcheck).
+- **Impact:** test methodology only; no code, contract or format change.
+  P3.7's per-tensor comparison against PyTorch autograd still covers
+  `qkv_b` as a whole.
