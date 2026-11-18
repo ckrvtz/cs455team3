@@ -837,3 +837,59 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   full `data/` now ends at val 5.7001 (step 200).
 - **Impact:** the smoke preset is also benchmark workload W-C (§12). Its lr
   changes the numbers, not the cost per step.
+
+## 2026-11-18: Sign-off tests for determinism, causality, resume, param counts (P5.1)
+
+- **Coverage map** (the four P5.1 layers of ROADMAP §10, all in `make test`):
+
+  | Layer | §10 criterion | Test |
+  |---|---|---|
+  | Param count | each preset matches §2.2 | `test_layout.cpp` `param_counts_match_roadmap` (base/small tied and untied exactly; smoke from the formula), since P0.4 |
+  | Determinism | 2 runs × 20 steps: log losses bit-identical, final param checksum identical | `test_signoff.cpp` `determinism_two_runs` (new) |
+  | Resume | 20 = 10 + checkpoint + 10, bit-identical params | `test_signoff.cpp` `resume_matches_uninterrupted` (new, smoke scale); `test_checkpoint.cpp` (tiny model, both directories) |
+  | Causality | perturb token t; logits at positions < t unchanged | `test_signoff.cpp` `causality_full_model` (new, full model); `test_attention.cpp` (op level) |
+
+- **Determinism and resume:** both run the `smoke` preset on the committed
+  real-data fixture with `log_every=1`.
+  - **Determinism:** every numeric `log.csv` column (step, tokens,
+    train/val loss, ppl, lr, grad norm) must match. The final checkpoint
+    must be byte-identical, and the FNV-1a of the final params is printed.
+  - **Second run:** it runs in a forked child whose heap is dirtied first:
+    2,000 blocks filled with 0xA5, every other one freed.
+- **Why dirty the heap:** a plain `fork()` copies the parent's heap, so the
+  child allocates at the same addresses as the parent. A planted bug that
+  scaled lr by a buffer address passed without the dirtying and failed with
+  it (measured). This catches address dependence and reads of reused small
+  heap blocks. Uninitialized reads of fresh `mmap` pages (always zero) are
+  not caught; that would need MemorySanitizer, which is not in the
+  toolchain.
+- **Causality:** a 2-layer model, tied and untied, perturbing batch row 0 at
+  t ∈ {0, 1, 7, 15}.
+  - Logits at positions < t must be bit-identical (`memcmp`).
+  - Position t must change.
+  - Batch row 1 must be bit-identical.
+  - A planted one-token look-ahead in attention forward fails it.
+- **Debug build:** determinism runs 2 × 6 steps and resume runs 6 = 3 + 3
+  (a smoke step takes ~1.2 s under -O0 + sanitizers); causality is
+  unchanged.
+- **Measured** (this container): `test_signoff` takes 2.2 s in release.
+  Final params FNV-1a, identical in both runs of each build:
+
+  | Build | FNV-1a |
+  |---|---|
+  | release float | `0d80323551e3bb51` |
+  | double | `a212a0f0162c37b2` |
+  | debug, 6 steps | `3f1add97f2972ba6` |
+
+  - The release value was reproduced from a from-scratch rebuild of
+    `build/release-cpu-serial-float` and by three separate executions.
+  - The very first test binary printed `3a787b8b4853b93d` (both runs
+    agreeing) before a later rebuild. Its linked objects cannot be
+    reconstructed, so that value is not used.
+  - The checksum is a per-binary reference: different compilers or flags may
+    legitimately round differently. The test requires only run-to-run
+    equality.
+- **Full suite:** `make test` 22 s, `make debug` 122 s,
+  `make test REAL=double` 31 s; 27/27 in each.
+- **Impact:** these tests are the §10 reference that Phases B–D must pass
+  unchanged on their own builds.
