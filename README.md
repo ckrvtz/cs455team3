@@ -11,8 +11,8 @@ preparation, loader), the full forward and backward passes, and the
 full-model gradient check, the AdamW optimizer with its LR schedule, and the
 training loop (`train_serial`) with validation and checkpoint/resume are
 done (Phases 0–4); `make test` includes the overfit and smoke training tests.
-Generation works (`generate`); prompt evaluation and benchmarking are not
-built yet.
+Generation (`generate`) and prompt evaluation (`eval`) work; benchmarking is
+not built yet.
 
 ## Requirements
 
@@ -145,6 +145,23 @@ bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --tem
 - **Output:** the prompt followed by the continuation. Same options and seed
   give the same text. The tiny smoke model produces word salad; readable
   stories need the `small` run.
+
+## Prompt evaluation
+
+```bash
+bin/eval --ckpt runs/smoke/ckpt_latest.bin        # writes runs/smoke/samples_200.txt
+```
+
+- **Prompts:** the 10 fixed prompts in `eval/prompts.txt` (story openers,
+  factual, reasoning, consistency).
+- **Output:** for each prompt, one greedy completion and one at temperature
+  0.8 with seed 1337 (at most 120 tokens). They go to
+  `samples_<step>.txt` next to the checkpoint (`--out` to change it).
+- **Comparability:** the settings are fixed and the file layout is fixed
+  (`include/tslm/samples.h`), so files from different runs and builds
+  compare line by line. The same binary and checkpoint reproduce the file
+  byte for byte.
+- **Vocab map:** `--vocab_map` follows the same rule as for `generate`.
 
 ## Long runs
 

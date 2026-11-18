@@ -1,0 +1,15 @@
+# Fixed evaluation prompts (ROADMAP P6.2). Format: <id> TAB <category> TAB <prompt>.
+# Categories: story (open-ended opener), factual (world knowledge), reasoning (simple
+# inference), consistency (tracking characters and objects). Written for this project in
+# the style of the TinyStories paper prompts; scored with eval/RUBRIC.md (P6.3).
+# Do not edit: samples from different runs and builds are compared prompt by prompt.
+1	story	Once upon a time, there was a little dog named Max. Max loved to
+2	story	Tom and his mom went to the beach. The sun was hot and
+3	story	One day, a small bird could not find its nest. It
+4	factual	Lily wanted to drink some cold milk, so she opened the
+5	factual	It was night and the sky was dark. Ben looked up and saw the bright
+6	factual	When it rains, Sara puts on her boots and takes her
+7	reasoning	Mia had three apples. She gave one apple to her friend, so now she had
+8	reasoning	The ice cream was left in the sun for a long time. When Jack came back, the ice cream had
+9	consistency	Anna had a red ball and Leo had a blue ball. Leo lost his ball, so Anna gave him
+10	consistency	Sam was sad because his kite was stuck in a tall tree. His dad came with a long

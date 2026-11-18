@@ -1021,3 +1021,40 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
      `make clean`), and record the number from that build.
 - **Impact:** no code change. The earlier entries stay as written
   (append-only log); this entry supersedes their affected numbers.
+
+## 2026-11-18: Fixed prompt set, eval app and samples file layout (P6.2)
+
+- **`eval/prompts.txt`:** 10 prompts written for this project in the style
+  of the TinyStories paper examples (none copied):
+  - 3 story openers;
+  - 3 factual (fridge, night sky, rain);
+  - 2 reasoning (counting, melting);
+  - 2 consistency (who has which ball; dad helping with a stuck kite).
+
+  The format is `<id> TAB <category> TAB <text>` with `#` comments, chosen
+  so the text can contain quotes and commas. The file is frozen: its
+  FNV-1a 64 is written into every samples file.
+- **`bin/eval`:** for every prompt, one greedy and one temperature-0.8
+  completion with seed 1337, at most 120 tokens, stopping at EOS.
+  - These settings are compile-time constants, not options, so every run
+    and build uses the same ones (the DoD's "stable across versions").
+  - Output goes to `samples_<step>.txt` next to the checkpoint (§9 run
+    outputs).
+- **Layout:** fixed by `include/tslm/samples.h` and pinned by an exact
+  expected string in `tests/test_samples.cpp`.
+  - A 6-line `#` header: format version, checkpoint and step, model, build,
+    prompts path/count/hash, settings.
+  - Then per prompt a `=== prompt <id> [<category>] ===` block with greedy
+    and sampled sections, each showing the prompt plus continuation.
+  - There is no date or timing, so the file is byte-reproducible; the
+    smoke checkpoint gave identical files on two runs.
+  - Changes to the layout go through the contract process.
+- **Shared code:** prompt encoding and decoding moved from
+  `apps/generate.cpp` into `TextCodec` (`include/tslm/text_codec.h`) so
+  `generate` and `eval` encode prompts identically. `generate` output is
+  unchanged (checked on the smoke checkpoint).
+- **Not yet meaningful:** the content of the completions. It needs the P5.2
+  `small` checkpoint, since the smoke model produces newlines and word
+  salad. Scoring is P6.3.
+- **Mutation evidence:** the tests failed on each of two planted bugs: a
+  dropped prompt-id ordering check, and a dropped "stopped at EOS" marker.

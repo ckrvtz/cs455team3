@@ -24,8 +24,7 @@
 #include "tslm/generate.h"
 #include "tslm/logging.h"
 #include "tslm/model.h"
-#include "tslm/tokenizer.h"
-#include "tslm/vocab_map.h"
+#include "tslm/text_codec.h"
 
 using namespace tslm;
 
@@ -82,25 +81,13 @@ int main(int argc, char** argv) {
     Model* model = model_create(info.model, 1, info.model.max_seq_len);
     CHECK(checkpoint_load(ckpt, model, &info, &err), "%s", err.c_str());
 
-    VocabMap vm;
-    CHECK(load_vocab_map(vocab_map, &vm, &err), "%s", err.c_str());
-    CHECK(vm.size() == size_t(info.model.vocab_size), "%s has %zu entries but the checkpoint has vocab_size %d",
-          vocab_map.c_str(), vm.size(), info.model.vocab_size);
-    Tokenizer tok;
-    CHECK(tok.load(vocab_json, merges_txt, &err), "%s", err.c_str());
-
-    // GPT-Neo id -> vocab id (<unk> when the token is not in the vocabulary).
-    std::vector<int32_t> to_vocab(tok.vocab_size(), UNK_ID);
-    for (size_t i = 0; i < vm.size(); ++i)
-        if (vm.gpt_ids[i] >= 0 && size_t(vm.gpt_ids[i]) < to_vocab.size())
-            to_vocab[size_t(vm.gpt_ids[i])] = static_cast<int32_t>(i);
-    std::vector<int32_t> context = {EOS_ID};
+    TextCodec codec;
+    CHECK(codec.load(vocab_map, vocab_json, merges_txt, &err), "%s", err.c_str());
+    CHECK(codec.vocab_size() == size_t(info.model.vocab_size),
+          "%s has %zu entries but the checkpoint has vocab_size %d", vocab_map.c_str(), codec.vocab_size(),
+          info.model.vocab_size);
     int unk = 0;
-    for (uint32_t g : tok.encode(prompt)) {
-        const int32_t id = g < to_vocab.size() ? to_vocab[g] : UNK_ID;
-        unk += id == UNK_ID;
-        context.push_back(id);
-    }
+    const std::vector<int32_t> context = codec.encode_prompt(prompt, &unk);
     if (unk > 0) log_warn("%d prompt token(s) are not in the vocabulary and became <unk>", unk);
 
     log_info("# %s | step %llu | %s | max_new %d, seed %llu", model_summary(model).c_str(),
@@ -111,7 +98,7 @@ int main(int argc, char** argv) {
                                      .c_str(),
              opt.max_new, static_cast<unsigned long long>(opt.seed));
     const std::vector<int32_t> out = generate_ids(model, context, opt);
-    const std::string text = decode_ids(vm, out.data(), out.size(), "", "<unk>");
+    const std::string text = codec.decode(out);
     log_info("%s%s", prompt.c_str(), text.c_str());
     log_info("# %zu new tokens%s", out.size(), int(out.size()) < opt.max_new ? " (stopped at EOS)" : "");
     model_free(model);
