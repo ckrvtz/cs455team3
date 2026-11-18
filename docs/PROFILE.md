@@ -117,8 +117,9 @@ warmup). gprof sampled 42.77 s. The same run's 13 steps took 13 × 3651.1 ms
 (mean) ≈ 47.5 s, so about 90% of step time was sampled. The remainder is
 time inside libm/libc (`exp`, `tanh`, `memset`), which is not compiled with
 `-pg` and so not attributed, plus instrumentation overhead. The profiled
-run's median step (3688.2 ms) is within 2.2% of the uninstrumented W-A
-medians, so `-pg` barely perturbs the timing.
+run's median step (3688.2 ms) is 2.2% above the mean of the three
+uninstrumented W-A medians (3610.2 ms; they range 3567.1–3640.0 ms), so
+`-pg` perturbs the timing only slightly.
 
 | Op | Self time | Share of sampled |
 |---|---|---|
