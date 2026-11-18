@@ -335,3 +335,24 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   checkpoints or file formats. CUDA/MPI implement the same signatures:
   `model_forward` returns a host double, and `model_logits` is a device
   pointer (generation copies the last-position row to the host).
+
+## 2026-11-18: GELU evaluated as x·σ(2u) instead of 0.5·x·(1+tanh u) (P3.1)
+
+- **Change:** `gelu_forward`/`gelu_backward` evaluate the §6.3 tanh-GELU
+  through the exact identity 1 + tanh(u) = 2σ(2u):
+  `out = x·σ(2u)` and `d/dx = s + 2x·s·(1−s)·k0·(1+3k1x²)`, with `s = σ(2u)`
+  and `1−s = σ(−2u)` computed directly.
+- **Reason:** the literal `1 + tanh(u)` cancels badly when tanh(u) ≈ −1
+  (x below about −4). In the `REAL=double` build, GELU and its derivative
+  near x = −6 were only accurate to about 1e-7 relative. The P3.1
+  finite-difference check (§10, rel err < 1e-6) failed there at 1.25e-4.
+  With the σ form the worst error is 8.7e-10. The function is unchanged
+  (same math, same §6.3 definition), so the backward is still its exact
+  derivative.
+- **Impact:** forward values change only at the rounding level. All
+  forward tests still pass, including the PyTorch golden (loss rel err 0 /
+  1.1e-16 in double). Note for CUDA (Phase B): use the same σ form; a
+  literal-tanh kernel would agree only within the §10 equivalence
+  tolerances, not bit for bit. Also, gradient checks of elementwise ops
+  evaluate only the perturbed element's term of the scalar loss; that is
+  mathematically identical and avoids rounding noise from unrelated terms.
