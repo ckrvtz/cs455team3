@@ -525,3 +525,34 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   untied runs), a missing attention dQ scale (36), a wrong GELU derivative
   factor (48), and the wrong LN-1 input in `model_backward` (30).
 - **Impact:** test configuration only; no code contracts or formats change.
+
+## 2026-11-18: Backward golden data (P3.7)
+
+- **Change:**
+  - **Generator:** `dev_only/gen_golden.py` now builds every parameter as a
+    float64 leaf tensor, runs autograd on the mean loss, and adds
+    `grad.<name>` for every parameter to `<case>_fwd.bin`.
+  - **Regenerated files:** both committed cases (`tiny`, `tiny_untied_x10`)
+    were regenerated with PyTorch 2.5.1 from the unchanged `_init.bin`
+    inputs. Their `loss`/`losses`/`logits` tensors are **bit-identical** to
+    the previous files (checked tensor by tensor). Only gradients were
+    added, and the files grew from ~4 KB to 63–67 KB.
+  - **Test:** `tests/test_golden.cpp` compares every parameter gradient,
+    with per-tensor rel-L2 < 1e-4 (§10).
+  - **AdamW:** the "after 5 AdamW steps" part of the §10 golden row belongs
+    to P4.1 (which implements AdamW) and is added there.
+- **Reason:** ROADMAP §10, P3.7. This regeneration was done with the
+  generator, not by hand-editing the golden files (CLAUDE.md §2), because
+  the generator gained an output, not because a test failed.
+- **Measured** (worst per-tensor gradient rel-L2, limit 1e-4):
+
+  | Build | `tiny` | `tiny_untied_x10` |
+  |---|---|---|
+  | float | 2.6e-7 | 5.7e-6 |
+  | debug (float) | 4.0e-7 | 2.9e-5 |
+  | double | 6.1e-16 | 7.6e-14 |
+
+  The double-build `tiny` result confirms the standard-init gradients that
+  the finite-difference gradcheck cannot resolve.
+- **Impact:** CUDA/MPI builds compare against the same files (cross-version
+  protocol, §10).

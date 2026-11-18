@@ -1,4 +1,4 @@
-"""Generate forward golden files from a dump_init file (ROADMAP §10, P2.6).
+"""Generate forward and backward golden files from a dump_init file (ROADMAP §10, P2.6, P3.7).
 
 OFFLINE / DEV ONLY. Never run by make or any test. Its outputs are committed as
 plain data under tests/golden/ and read by tests/test_golden.cpp.
@@ -18,7 +18,8 @@ LayerNorm eps 1e-5 (biased variance), GELU tanh approximation, attention scale
 widened to float64.
 
 Output (tensor_file.h "TSGD" format): loss f64 [1], losses f64 [B*T],
-logits f64 [B, T, V]. P3.7 extends this script with gradients.
+logits f64 [B, T, V], and grad.<name> f64 [shape] for every parameter: the
+autograd gradient of the mean loss (P3.7). AdamW steps are added in P4.1.
 """
 
 import array
@@ -70,10 +71,11 @@ def tensor(entry):
     return torch.tensor(vals, dtype=torch.float64).reshape(dims)
 
 
-def forward(d):
+def forward(d, P):
+    """P: parameter name -> float64 tensor (leaf tensors when gradients are wanted)."""
     V, maxT, L, C, NH, tied, B, T = d["config"][2]
     hs = C // NH
-    p = lambda name: tensor(d["param." + name])
+    p = lambda name: P[name]
     tokens = torch.tensor(d["tokens"][2], dtype=torch.long).reshape(B, T)
     targets = torch.tensor(d["targets"][2], dtype=torch.long).reshape(B, T)
 
@@ -107,15 +109,22 @@ def main():
     torch.set_default_dtype(torch.float64)
     d = read_tsgd(sys.argv[1])
     V, maxT, L, C, NH, tied, B, T = d["config"][2]
-    with torch.no_grad():
-        logits, losses = forward(d)
+    # Every parameter as a float64 leaf tensor, in the dump (= layout) order.
+    names = [k[len("param."):] for k in d if k.startswith("param.")]
+    P = {n: tensor(d["param." + n]).requires_grad_(True) for n in names}
+    logits, losses = forward(d, P)
     loss = losses.mean()
-    write_tsgd(sys.argv[2], [
+    loss.backward()  # autograd: d(mean loss)/d(param); tied wte gets both paths
+    out = [
         ("loss", [1], [loss.item()]),
-        ("losses", [B * T], losses.tolist()),
-        ("logits", [B, T, V], logits.reshape(-1).tolist()),
-    ])
-    print("%s: loss %.12f (torch %s)" % (sys.argv[2], loss.item(), torch.__version__))
+        ("losses", [B * T], losses.detach().tolist()),
+        ("logits", [B, T, V], logits.detach().reshape(-1).tolist()),
+    ]
+    for n in names:
+        g = P[n].grad
+        out.append(("grad." + n, list(g.shape), g.reshape(-1).tolist()))
+    write_tsgd(sys.argv[2], out)
+    print("%s: loss %.12f, %d gradient tensors (torch %s)" % (sys.argv[2], loss.item(), len(names), torch.__version__))
 
 
 if __name__ == "__main__":

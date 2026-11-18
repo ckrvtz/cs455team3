@@ -1,4 +1,4 @@
-// test_golden.cpp: forward pass vs float64 PyTorch golden files (ROADMAP §10, P2.6).
+// test_golden.cpp: forward and backward vs float64 PyTorch golden files (ROADMAP §10, P2.6, P3.7).
 // No Python at test time. For each case:
 //   <case>_init.bin  written by bin/dump_init (config, seed, f32 init params, batch)
 //   <case>_fwd.bin   written offline by dev_only/gen_golden.py (float64 PyTorch)
@@ -9,6 +9,9 @@
 //   2. Forward with the dumped params: loss rel err < 1e-5 (§10 float32 vs
 //      float64 criterion), per-position losses, and the logits' relative
 //      L2 error, which is reported and held to < 1e-5 here too.
+//   3. Backward: every parameter gradient vs PyTorch autograd (grad.<name>),
+//      per-tensor relative L2 error < 1e-4 (§10 criterion). AdamW steps
+//      are added in P4.1.
 #include "test.h"
 
 #include "tslm/backend.h"
@@ -125,6 +128,39 @@ void check_case(const std::string& name) {
     EXPECT_TRUE(loss_rel < 1e-5);
     EXPECT_TRUE(worst_pos < 1e-5);
     EXPECT_TRUE(logits_rel_l2 < 1e-5);
+
+    // 3. Backward (P3.7): every parameter gradient vs PyTorch float64 autograd,
+    //    per-tensor relative L2 error < 1e-4 (§10). Tied cases: wte's golden
+    //    gradient includes both the embedding and the output-head paths.
+    dev_memset(m->grads, 0, model_param_bytes(m));
+    model_forward(m, tok.data(), tgt.data(), c.B, c.T);
+    model_backward(m);
+    std::vector<real_t> grads(L.num_params_padded);
+    copy_d2h(grads.data(), m->grads, grads.size() * sizeof(real_t));
+    double worst = 0;
+    std::string worst_name;
+    int tensors = 0;
+    for (const TensorDesc& t : L.tensors) {
+        const NamedTensor& gg = c.fwd.get("grad." + t.name);
+        ASSERT_EQ(gg.numel(), uint64_t(t.numel));
+        double num = 0, den = 0;
+        for (size_t k = 0; k < t.numel; ++k) {
+            const double ref = gg.f(k), d = double(grads[t.offset + k]) - ref;
+            num += d * d;
+            den += ref * ref;
+        }
+        ASSERT_TRUE(den > 0);
+        const double rel = std::sqrt(num / den);
+        if (rel > worst) {
+            worst = rel;
+            worst_name = t.name;
+        }
+        ++tensors;
+        if (!(rel < 1e-4)) test::report(__FILE__, __LINE__, name + " grad." + t.name + " rel-L2 " + std::to_string(rel));
+    }
+    EXPECT_EQ(size_t(tensors), L.tensors.size());
+    std::printf("    %-16s gradients: %d tensors, worst rel-L2 %.2e (%s), tol 1e-4\n", name.c_str(), tensors, worst,
+                worst_name.c_str());
     model_free(m);
 }
 

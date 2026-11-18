@@ -10,8 +10,11 @@ at build or test time. Do not edit them by hand (CLAUDE.md §2).
 | `<case>_fwd.bin` | `dev_only/gen_golden.py` (float64 PyTorch) | `tests/test_golden.cpp` |
 
 `.bin` files use the `TSGD` named-tensor format (`include/tslm/tensor_file.h`).
+Despite the name, `<case>_fwd.bin` holds both the forward results (`loss`,
+`losses`, `logits`) and, since P3.7, the autograd gradient of the mean loss
+for every parameter (`grad.<name>`).
 
-## Forward golden cases (P2.6)
+## Forward and backward golden cases (P2.6, P3.7)
 
 Both cases use the ROADMAP §10 gradcheck model: V=32, max_T=8, L=2, C=16,
 NH=2, B=2, T=8, seed 1337.
