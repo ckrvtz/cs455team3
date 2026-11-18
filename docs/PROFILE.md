@@ -27,6 +27,18 @@ of each lane's in-order partial sum + scalar tail). This differs from a naive
 left-to-right sum by normal rounding error, which the matmul test checks
 against a rigorous order-independent error bound.
 
+## matmul_backward (`src/ops/matmul_cpu.cpp`), P3.2
+
+| Technique | Parameters | Why |
+|---|---|---|
+| Output-row ("axpy") loop order | none | `dinp[n,:] += dout[n,o]·W[o,:]` and `dW[o,:] += dout[n,o]·inp[n,:]` make the innermost loop run along a contiguous output row with independent elements, so it vectorizes without `-ffast-math` and without the forward pass's lane trick. Each element is summed in plain ascending order (over `o` for `dinp`, over `n` for `dW`/`dbias`). GCC `-fopt-info-vec` reports all five inner loops vectorized with 32-byte vectors. |
+| Register tile | 4 output rows | 4 `dinp` rows share each loaded `W` row; 4 `dW` rows share each loaded `inp` row. |
+| Cache blocking | same NB = 128, KC = 256, OB = 64 | `dinp`: a 64 × 256 `W` block (64 KiB, L2) is reused across 128 rows. `dW`: a 128 × 256 `inp` block (128 KiB, L2) feeds 4 `dW` row slices (4 KiB, L1). |
+| Leftovers | one row at a time | Correct for any N, C, OC; tested on block-boundary shapes. |
+
+Not done: no fusing of the three gradients into one pass, no transposed
+copies (the op cannot allocate), no threads.
+
 ## attention_forward (`src/ops/attention_cpu.cpp`), P2.3
 
 | Technique | Why |

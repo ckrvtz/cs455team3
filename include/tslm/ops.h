@@ -11,7 +11,7 @@
 //   - output buffers must not overlap input buffers;
 //   - layouts are row-major (§6.2). Sizes that can exceed 2^31 are size_t.
 //
-// This file grows task by task. Declared so far: P2.1-P2.4 forward ops, P3.1 backward ops.
+// This file grows task by task. Declared so far: P2.1-P2.4 forward ops, P3.1-P3.2 backward ops.
 #pragma once
 
 #include <cstddef>
@@ -60,6 +60,10 @@ void residual_backward(real_t* da, real_t* db, const real_t* dout, size_t n);
 //   out[n,o] = sum_c inp[n,c] * W[o,c] + (bias ? bias[o] : 0)
 void matmul_forward(real_t* out, const real_t* inp, const real_t* W, const real_t* bias, int N, int C,
                     int OC);
+// dinp += dout*W ; dW += dout^T*inp ; dbias += colsum(dout)  (dbias nullable)
+//   dinp[n,c] += sum_o dout[n,o] * W[o,c];  dW[o,c] += sum_n dout[n,o] * inp[n,c];  dbias[o] += sum_n dout[n,o]
+void matmul_backward(real_t* dinp, real_t* dW, real_t* dbias, const real_t* dout, const real_t* inp,
+                     const real_t* W, int N, int C, int OC);
 
 // Causal multi-head attention on fused qkv[B,T,3C] -> out[B,T,C]; att[B,NH,T,T] saved.
 //   hs = C / NH; for token (b,t): Q = qkv[b,t,0:C], K = qkv[b,t,C:2C], V = qkv[b,t,2C:3C],
