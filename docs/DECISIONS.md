@@ -971,3 +971,53 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   - greedy ties going to the higher id;
   - temperature multiplied instead of divided;
   - EOS returned.
+
+## 2026-11-18: Correction: release-float numbers recorded from a stale build (P4.5, P5.1)
+
+- **What happened:**
+  - Between P4.4 and P5.1, the incremental release-float build linked an
+    object file that did not match its committed source.
+  - The most likely cause: one of the mutation checks (plant a bug, build,
+    restore the file with `cp`) left an object compiled from a mutated
+    variant that `make` did not rebuild.
+  - Its numerics differed from a fresh build only in the last bits. It
+    passed every tolerance-based test (gradcheck, golden, smoke criteria),
+    so nothing flagged it.
+  - It disappeared in P5.1, when a mutation check forced
+    `src/ops/attention_cpu.cpp` to recompile. That is consistent with the
+    stale object being `attention_cpu.o`, but this was not proven.
+- **Evidence (2026-11-18):**
+  - The P4.5 commit (`a9e214c`) built from scratch in a separate worktree
+    gives the same smoke result as today's build: train 6.1013, val 5.6889.
+    The training code has not changed since P4.4, and the current binary
+    reproduces itself byte for byte.
+  - A from-scratch `build/release-cpu-serial-float` gives the values in the
+    table below.
+  - The lr 1e-3 smoke numbers recorded in P4.2–P4.4 (train 6.2963, val
+    6.1346) reproduce exactly. The difference only shows at lr 1e-2, where
+    small rounding differences are amplified over 200 steps.
+- **Corrected values** (release float; every other recorded number was
+  checked and still holds):
+
+  | Record | Recorded | From a clean build |
+  |---|---|---|
+  | P4.5: `train_serial --config configs/smoke.cfg` on full `data/`, step 200 | train 6.0728, val 5.7001 | train 6.1013, val 5.6889 |
+  | P4.5: `test_smoke` val at step 200 (fixture) | 5.7444 | 5.7445 (steps 50/100/150 unchanged: 6.2771 / 6.0214 / 5.7996) |
+  | P5.1: first `test_signoff` final-params FNV-1a | `3a787b8b4853b93d` (already marked unusable) | `0d80323551e3bb51` (as recorded later in P5.1) |
+
+  - All §10 criteria still pass with the same margins.
+  - Unaffected and re-verified from scratch builds today:
+    - double: smoke val 5.7434, overfit 0.0002, FNV `a212a0f0162c37b2`;
+    - debug: FNV `3f1add97f2972ba6`;
+    - release overfit: 0.0002.
+  - `docs/STATUS.md` quotes "val loss 5.70" for the full-data smoke run. It
+    will read 5.69 at its next requested update; STATUS is updated only on
+    request.
+- **Procedure from now on:**
+  1. After a mutation check, restore the file and then `touch` it, so
+     `make` always recompiles the restored source.
+  2. Before recording any number in DECISIONS, RUNS or a CSV, rebuild the
+     configuration that produced it from scratch (`rm -rf build/<tag>`, or
+     `make clean`), and record the number from that build.
+- **Impact:** no code change. The earlier entries stay as written
+  (append-only log); this entry supersedes their affected numbers.
