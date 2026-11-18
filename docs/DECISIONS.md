@@ -188,3 +188,23 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   cover the whole `.bin` files.
 - **Impact:** the loader (P1.4) reads `num_tokens` at offset 16. CUDA/MPI
   builds read the same files unchanged.
+
+## 2026-11-18: DataLoader details (P1.4)
+
+- **Change:**
+  - **Fisher–Yates direction:** `epoch_permutation` uses
+    `for i = n-1 down to 1: j = rng.uniform_int(i+1); swap(perm[i], perm[j])`
+    with `Rng(seed, 100 + epoch)`. That order is frozen by a known-answer
+    test, and every build (CUDA/MPI) must reproduce it.
+  - **Resume state:** `{epoch, step}` is the global position (same on every
+    rank). An epoch rolls over lazily, so `{e, steps_per_epoch}` and
+    `{e+1, 0}` serve the same next batch.
+  - **Token validation:** every token is checked against the header's
+    `vocab_size` as it is copied.
+  - **POSIX `mmap`:** the token file is mapped with POSIX `mmap`, which is
+    host-only and available on Linux/macOS clusters.
+- **Reason:** ROADMAP §7.4, §4.5. With the state and permutation defined
+  globally, a 4×8 sharded run serves the same rows as a serial batch of 32,
+  which the sharding-equivalence test checks.
+- **Impact:** Phase C ranks open the same file with `(rank, world_size)`.
+  The checkpoint (P4.3) stores `LoaderState`.
