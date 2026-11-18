@@ -107,6 +107,8 @@ Config tiny_config(const std::string& run_name) {
     c.train.run_name = run_name;
     c.train.out_dir = tmp_dir() + "/ckruns";
     c.train.train_data = write_tokens("ckpt_train.bin");
+    c.train.val_data = write_tokens("ckpt_val.bin");
+    c.train.val_batches = 4;
     c.train.batch_size = 2;
     c.train.seq_len = 8;
     c.train.max_steps = 20;

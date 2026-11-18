@@ -14,7 +14,14 @@
 // Steps are 1-based. step_ms is the wall time of the whole step, so the five
 // phase columns sum to it up to the untimed bookkeeping.
 //
-// log.csv gets a row at step 1, every log_every steps, and at the last step.
+// Validation (eval.h) runs every eval_every steps and at the last step, on
+// the fixed first val_batches batches of val_data, after the step's timing
+// (step_ms excludes it); a fresh run also evaluates once before step 1 and
+// prints the result (expected ~ln V). val_loss / val_ppl are filled only on
+// rows of steps where validation ran.
+//
+// log.csv gets a row at step 1, every log_every steps, at every validation
+// step, and at the last step.
 // train_loss, lr and grad_norm are that step's values (bit-reproducible, so
 // rows can be compared across builds). The timing columns and tok_per_s are
 // per-step means over the steps since the previous row. tokens_seen and
@@ -31,7 +38,7 @@
 //   ckpt_<step>.bin and ckpt_latest.bin (checkpoint.h) every ckpt_every
 //                 steps (0 = none) and always at max_steps; written after the
 //                 step's timing, so step_ms excludes checkpoint I/O.
-// Not yet produced: validation columns (P4.4) and samples (Phase 6).
+// Not yet produced: samples (Phase 6).
 //
 // Resume (cfg.train.resume = checkpoint path): params, m, v, the step and the
 // loader position come from the checkpoint; its model config, seed, T and
@@ -57,6 +64,7 @@ struct TrainSummary {
     uint64_t tokens_seen = 0;
     double first_loss = 0.0;  // train loss at start_step
     double final_loss = 0.0;  // train loss at the last step
+    double final_val_loss = 0.0;  // val loss at the last evaluation
     double wall_s = 0.0;      // total wall time of the step loop
 };
 

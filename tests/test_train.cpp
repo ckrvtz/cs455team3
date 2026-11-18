@@ -9,6 +9,7 @@
 //   - the loss falls on learnable data
 //   - logged loss / grad_norm equal an independent reference loop written
 //     from §9 (catches a missing grad zeroing or a reordered step)
+//   - val_loss / val_ppl only on validation rows, ppl = exp(val)
 //   - lr column = lr_at(step); non-finite loss / norm aborts; vocab mismatch aborts
 #include "test.h"
 
@@ -78,6 +79,9 @@ Config tiny_config(const std::string& run_name) {
     c.train.run_name = run_name;
     c.train.out_dir = tmp_dir() + "/runs";
     c.train.train_data = write_tokens("train_loop.bin", 1 + 8 * 400, 32);
+    c.train.val_data = write_tokens("val_loop.bin", 1 + 8 * 40, 32);  // 40 chunks
+    c.train.val_batches = 4;
+    c.train.eval_every = 10;
     c.train.batch_size = 2;
     c.train.seq_len = 8;
     c.train.max_steps = 25;
@@ -171,7 +175,14 @@ TEST(train_writes_log_and_manifest) {
         const int step = std::atoi(r[0].c_str());
         EXPECT_EQ(step, want_steps[i]);
         EXPECT_EQ(std::strtoull(r[1].c_str(), nullptr, 10), uint64_t(step) * 16);
-        EXPECT_TRUE(r[3].empty() && r[4].empty());  // validation not run
+        // Validation runs at multiples of eval_every (10) and at the last step.
+        if (step % 10 == 0 || step == 25) {
+            const double vl = std::strtod(r[3].c_str(), nullptr), vp = std::strtod(r[4].c_str(), nullptr);
+            EXPECT_TRUE(std::isfinite(vl) && vl > 0.0);
+            EXPECT_NEAR(vp, std::exp(vl), 1e-7 * vp);  // %.9g of each
+        } else {
+            EXPECT_TRUE(r[3].empty() && r[4].empty());
+        }
         EXPECT_NEAR(std::strtod(r[5].c_str(), nullptr), lr_at(cfg.train, step), 1e-8 * lr_at(cfg.train, step));  // %.9g
         double phases = 0.0;
         for (int k = 9; k < 14; ++k) {
@@ -186,6 +197,8 @@ TEST(train_writes_log_and_manifest) {
         EXPECT_TRUE(std::isfinite(std::strtod(r[6].c_str(), nullptr)));
     }
     EXPECT_NEAR(std::strtod(rows.back()[2].c_str(), nullptr), s.final_loss, 1e-6 * s.final_loss);
+    EXPECT_NEAR(std::strtod(rows.back()[3].c_str(), nullptr), s.final_val_loss, 1e-6 * s.final_val_loss);
+    EXPECT_TRUE(s.final_val_loss < 0.6 * std::log(32.0));  // val falls too (same periodic data)
 
     const std::string man = read_file(run_dir(cfg) + "/manifest.txt");
     for (const char* key : {"# date_utc: ", "# git: ", "# build: ", "# compiler: ", "# cxxflags: ", "# cpu: ",
@@ -207,7 +220,9 @@ TEST(train_matches_reference_loop) {
     reference_run(cfg, &loss, &gnorm);
     std::string h;
     const auto rows = read_log(run_dir(cfg) + "/log.csv", &h);
-    ASSERT_EQ(rows.size(), size_t(4));  // steps 1, 4, 8, 12
+    // Steps 1, 4, 8, 10 (validation), 12: the row after a validation still
+    // matches the reference, so evaluating does not disturb training.
+    ASSERT_EQ(rows.size(), size_t(5));
     char b[64];
     for (const auto& r : rows) {
         const int step = std::atoi(r[0].c_str());

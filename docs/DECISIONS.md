@@ -723,3 +723,47 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **Impact:** all four builds read and write this format. Phase C ranks each
   load the same file (no broadcast needed); Phase B/D stream through the
   same `copy_*` calls.
+
+## 2026-11-18: Validation pass (P4.4)
+
+- **Fixed validation set:**
+  - **What it is:** §9 says "first `val_batches` chunks", but the key is
+    named for batches. It is read as the first `val_batches` *batches*:
+    chunks `[0, val_batches·gB)` of `val_data` in file order, unshuffled.
+  - **Batching:** batch i is chunks `[i·gB, (i+1)·gB)`, and rank r takes
+    rows `[r·B, (r+1)·B)`, as in training (§4.5). The same tokens are used
+    at every evaluation and in every build.
+  - **Loader:** `DataLoader::fixed_batch` reads it without touching the
+    shuffle state. A file too small for `val_batches` aborts at startup.
+- **Loss:** `val_loss` = (sum of batch-mean losses over batches and ranks) /
+  (val_batches · world_size). This equals the mean over all positions,
+  because every rank-batch has B·T positions. Sums are in double, combined
+  with `comm_allreduce_sum_double`. `val_ppl` = exp(`val_loss`).
+- **Cadence:**
+  - Validation runs every `eval_every` steps and at `max_steps`, after the
+    step's timing, so `step_ms` excludes it (as with checkpoints).
+  - Validation steps always get a `log.csv` row; `val_*` stay empty on
+    other rows.
+  - A fresh run also evaluates once before step 1 and prints the result to
+    the console only. There is no step-0 row, because `train_loss` has no
+    value there and the columns are fixed.
+  - It is forward only and touches no params, grads or optimizer state.
+    Tests show the training columns are identical whether validation runs
+    every step or only at the end.
+- **Measured:**
+  - Fresh V = 10000 model on synthetic data (`tests/test_eval.cpp`, seeds 1,
+    2, 1337): 9.21337, 9.21537, 9.20814 vs ln(10000) = 9.21034; the test
+    bound is ±0.05.
+  - `bin/train_serial --config configs/smoke.cfg` on real `data/val.bin`
+    (8 batches, 1024 tokens): 9.2164 at init, then 7.8005 / 6.5740 /
+    6.2122 / 6.1346 at steps 50 / 100 / 150 / 200. The train-loss column is
+    unchanged from P4.2 (6.2963 at step 200).
+- **Mutation evidence:** the tests failed on each of five planted bugs:
+  - wrong mean divisor;
+  - missing rank offset in `fixed_batch`;
+  - `val_ppl` not exponentiated;
+  - no validation at the last step;
+  - every validation batch reading batch 0.
+- **Impact:** the CUDA and MPI builds use the same loop and loader, so the
+  val loss is comparable across builds (the §10 cross-version check: within
+  1% after 100 steps).

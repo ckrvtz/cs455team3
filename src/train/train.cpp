@@ -13,6 +13,7 @@
 #include "tslm/comm.h"
 #include "tslm/common.h"
 #include "tslm/dataset.h"
+#include "tslm/eval.h"
 #include "tslm/logging.h"
 #include "tslm/optim.h"
 #include "tslm/timer.h"
@@ -54,8 +55,17 @@ TrainSummary train_run(const Config& cfg) {
           "%s has vocab_size %u but the model has vocab_size %d", tc.train_data.c_str(), loader.vocab_size(),
           cfg.model.vocab_size);
 
-    Model* model = model_create(cfg.model, B, T);
     const uint32_t global_batch = static_cast<uint32_t>(B * world);
+    DataLoader val;
+    CHECK(val.open(tc.val_data, B, T, tc.seed, rank, world, &err), "%s", err.c_str());
+    CHECK(val.vocab_size() == loader.vocab_size(), "%s has vocab_size %u but %s has %u", tc.val_data.c_str(),
+          val.vocab_size(), tc.train_data.c_str(), loader.vocab_size());
+    CHECK(uint64_t(tc.val_batches) * global_batch <= val.num_chunks(),
+          "val_batches=%d needs %llu chunks of T=%d at global batch %u; %s has %llu", tc.val_batches,
+          static_cast<unsigned long long>(uint64_t(tc.val_batches) * global_batch), T, global_batch,
+          tc.val_data.c_str(), static_cast<unsigned long long>(val.num_chunks()));
+
+    Model* model = model_create(cfg.model, B, T);
     int start_step = 1;
     uint64_t tokens_at_start = 0;
     if (tc.resume.empty()) {
@@ -103,7 +113,17 @@ TrainSummary train_run(const Config& cfg) {
         log_info("data %s: %llu tokens, %llu steps/epoch at global batch %d x T=%d; %d steps", tc.train_data.c_str(),
                  static_cast<unsigned long long>(loader.num_tokens()),
                  static_cast<unsigned long long>(loader.steps_per_epoch()), B * world, T, tc.max_steps);
-        log_info("note: validation (P4.4) is not implemented yet: val_loss/val_ppl stay empty");
+        log_info("validation %s: first %d batches (%llu tokens) every %d steps and at the end",
+                 tc.val_data.c_str(), tc.val_batches,
+                 static_cast<unsigned long long>(uint64_t(tc.val_batches) * global_batch * uint64_t(T)),
+                 tc.eval_every);
+    }
+    if (tc.resume.empty()) {
+        // Fresh model: expect about ln(V) (P4.4); console only, log.csv starts at step 1.
+        const double v0 = evaluate(model, val, tc.val_batches, x_host.data(), y_host.data(), x_dev, y_dev);
+        if (lead)
+            log_info("val at init: loss %.4f (ln V = %.4f), ppl %.1f", v0, std::log(double(cfg.model.vocab_size)),
+                     std::exp(v0));
     }
 
     const uint64_t tokens_per_step = uint64_t(ntok) * uint64_t(world);
@@ -157,9 +177,19 @@ TrainSummary train_run(const Config& cfg) {
         if (step == start_step) sum.first_loss = loss;
         sum.final_loss = loss;
 
-        if (step == 1 || step % tc.log_every == 0 || step == tc.max_steps) {
+        // Validation runs after the step's timing, so step_ms excludes it.
+        const bool eval_now = step % tc.eval_every == 0 || step == tc.max_steps;
+        double val_loss = std::nan("");
+        if (eval_now) {
+            val_loss = evaluate(model, val, tc.val_batches, x_host.data(), y_host.data(), x_dev, y_dev);
+            sum.final_val_loss = val_loss;
+        }
+
+        if (step == 1 || step % tc.log_every == 0 || eval_now) {
             const double n = interval_steps;
             LogRow r;
+            r.val_loss = val_loss;
+            r.val_ppl = std::exp(val_loss);
             r.step = step;
             r.tokens_seen = sum.tokens_seen;
             r.train_loss = loss;
@@ -174,8 +204,10 @@ TrainSummary train_run(const Config& cfg) {
             r.opt_ms = timer.ms(Phase::Opt) / n;
             if (lead) {
                 csv.write(r);
-                log_info("step %6d/%d | loss %.4f | lr %.3e | gnorm %.3f | %.1f ms/step | %.0f tok/s", step,
-                         tc.max_steps, loss, lr, gnorm, r.step_ms, r.tok_per_s);
+                char vbuf[64] = "";
+                if (eval_now) std::snprintf(vbuf, sizeof(vbuf), " | val %.4f ppl %.2f", val_loss, r.val_ppl);
+                log_info("step %6d/%d | loss %.4f | lr %.3e | gnorm %.3f | %.1f ms/step | %.0f tok/s%s", step,
+                         tc.max_steps, loss, lr, gnorm, r.step_ms, r.tok_per_s, vbuf);
             }
             timer.reset();
             interval_ms = 0.0;

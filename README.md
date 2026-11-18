@@ -9,8 +9,8 @@ are in [`CLAUDE.md`](CLAUDE.md).
 **Status (Phase A, serial):** the data pipeline (download, tokenizer, dataset
 preparation, loader), the full forward and backward passes, and the
 full-model gradient check, the AdamW optimizer with its LR schedule, and the
-training loop (`train_serial`) with checkpoint/resume are done. Validation,
-generation and benchmarking are not built yet.
+training loop (`train_serial`) with validation and checkpoint/resume are
+done. Generation and benchmarking are not built yet.
 
 ## Requirements
 
@@ -105,9 +105,10 @@ bin/train_serial --config configs/smoke.cfg --ckpt_every 100 --resume runs/smoke
 - **Outputs** go to `runs/<run_name>/` (`--out_dir` changes `runs`):
   - `manifest.txt`: date, git hash, build, compiler flags, CPU, then the full
     resolved config. `--config runs/<run_name>/manifest.txt` reruns the same config.
-  - `log.csv`: one row at step 1, every `log_every` steps and at the end:
-    loss, lr, grad norm, tokens/s, and per-step milliseconds for data,
-    forward, backward, comm and optimizer.
+  - `log.csv`: one row at step 1, every `log_every` steps, at each
+    validation and at the end: training loss, validation loss and perplexity
+    (on validation rows), lr, grad norm, tokens/s, and per-step milliseconds
+    for data, forward, backward, comm and optimizer.
   - `ckpt_<step>.bin` and `ckpt_latest.bin`: weights plus optimizer and data
     position, every `ckpt_every` steps (0 = none) and always at the last step.
 
@@ -117,8 +118,10 @@ bin/train_serial --config configs/smoke.cfg --ckpt_every 100 --resume runs/smoke
   run directory, `log.csv` rows after the checkpoint are replaced. A resumed
   run gives the same results, bit for bit, as one that was never stopped.
 - **Data:** training reads `data/train.bin` (`--train_data` to change it).
-- **Not written yet:** the `val_loss`/`val_ppl` columns stay empty. The
-  program says so when it starts.
+- **Validation:** every `eval_every` steps and at the end, on the same first
+  `val_batches` batches of `data/val.bin` (`--val_data`), forward only. A
+  fresh run also prints the validation loss before step 1 (about
+  ln 10000 = 9.21).
 - **Timing:** the first run after a reboot can be much slower. The 927 MB
   token file is read at random positions, and those reads are slow until the
   file is in the OS page cache; the extra time shows up in `data_ms`.
