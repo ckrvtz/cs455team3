@@ -44,9 +44,7 @@ void make_dirs(const std::string& path) {
     CHECK(::stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode), "%s is not a directory", path.c_str());
 }
 
-namespace {
-
-std::string cpu_model() {
+std::string cpu_model_name() {
     std::FILE* f = std::fopen("/proc/cpuinfo", "r");
     if (!f) return "unknown";
     char line[512];
@@ -65,6 +63,10 @@ std::string cpu_model() {
     return model;
 }
 
+const char* build_git_hash() { return TSLM_GIT_HASH; }
+
+namespace {
+
 std::string utc_now() {
     const std::time_t t = std::time(nullptr);
     std::tm tm{};
@@ -76,25 +78,32 @@ std::string utc_now() {
 
 }  // namespace
 
-std::string manifest_text(const Config& cfg, const Model* model, uint64_t train_tokens, uint64_t steps_per_epoch,
-                          int world_size) {
+std::string build_info_text(int world_size) {
     const long cores = ::sysconf(_SC_NPROCESSORS_ONLN);
     const long pages = ::sysconf(_SC_PHYS_PAGES), page = ::sysconf(_SC_PAGE_SIZE);
     const double ram_mb = (pages > 0 && page > 0) ? double(pages) * double(page) / (1024.0 * 1024.0) : -1.0;
     char b[256];
     std::string s;
-    s += "# tslm run manifest (ROADMAP §9). '#' lines are metadata; the rest is the resolved config,\n";
-    s += "# reloadable with --config <this file>.\n";
     s += "# date_utc: " + utc_now() + "\n";
     s += "# git: " TSLM_GIT_HASH "\n";
     s += std::string("# build: ") + build_description() + "\n";
     s += "# compiler: " TSLM_CXX " " __VERSION__ "\n";
     s += "# cxxflags: " TSLM_CXXFLAGS "\n";
     s += std::string("# device: ") + dev_name() + "\n";
-    s += "# cpu: " + cpu_model() + "\n";
+    s += "# cpu: " + cpu_model_name() + "\n";
     std::snprintf(b, sizeof(b), "# cores_online: %ld\n# ram_mb: %.0f\n# world_size: %d\n", cores, ram_mb,
                   world_size);
     s += b;
+    return s;
+}
+
+std::string manifest_text(const Config& cfg, const Model* model, uint64_t train_tokens, uint64_t steps_per_epoch,
+                          int world_size) {
+    char b[256];
+    std::string s;
+    s += "# tslm run manifest (ROADMAP §9). '#' lines are metadata; the rest is the resolved config,\n";
+    s += "# reloadable with --config <this file>.\n";
+    s += build_info_text(world_size);
     s += "# " + model_summary(model) + "\n";
     std::snprintf(b, sizeof(b), "# train_tokens: %llu\n# steps_per_epoch: %llu\n",
                   static_cast<unsigned long long>(train_tokens), static_cast<unsigned long long>(steps_per_epoch));

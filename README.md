@@ -11,8 +11,8 @@ preparation, loader), the full forward and backward passes, and the
 full-model gradient check, the AdamW optimizer with its LR schedule, and the
 training loop (`train_serial`) with validation and checkpoint/resume are
 done (Phases 0–4); `make test` includes the overfit and smoke training tests.
-Generation (`generate`) and prompt evaluation (`eval`) work; benchmarking is
-not built yet.
+Generation (`generate`), prompt evaluation (`eval`) and benchmarking
+(`bench`) work.
 
 ## Requirements
 
@@ -165,6 +165,25 @@ bin/eval --ckpt runs/smoke/ckpt_latest.bin        # writes runs/smoke/samples_20
 - **Scoring:** completions are scored by hand, 0–5 on grammar, consistency
   and sense, following [`eval/RUBRIC.md`](eval/RUBRIC.md). Scores go in
   `eval/scores.csv`.
+
+## Benchmarks
+
+```bash
+scripts/bench.sh W-C        # smoke, 200 steps, 3 runs -> bench/serial_W-C.csv
+scripts/bench.sh W-A        # small, 50 steps, B=32, 3 runs (about 10 min serial) -> bench/serial_W-A.csv
+```
+
+- **What a run does:** `bin/bench` runs one fixed workload (ROADMAP §12)
+  with the real training step and appends one CSV row.
+  - **Row contents:** median and mean step time, tokens/s, the per-phase
+    means, peak memory, machine id and git hash.
+  - **Warmup:** the first 3 steps are discarded.
+  - **Prewarm:** the training token file is read once first, so a cold
+    page cache does not distort the data time.
+- **Manifest:** `bench/<version>_<workload>.manifest.txt` records the
+  build, flags, machine and config of the latest run.
+- **Conditions:** run benchmarks on an idle machine, from a clean release
+  build (`make clean && make`).
 
 ## Long runs
 

@@ -54,7 +54,9 @@
 #include <string>
 
 #include "tslm/config.h"
+#include "tslm/dataset.h"
 #include "tslm/model.h"
+#include "tslm/timer.h"
 
 namespace tslm {
 
@@ -67,6 +69,27 @@ struct TrainSummary {
     double final_val_loss = 0.0;  // val loss at the last evaluation
     double wall_s = 0.0;      // total wall time of the step loop
 };
+
+// Host batch buffers and their device copies, each B*T ids.
+struct StepBuffers {
+    int32_t* x_host;
+    int32_t* y_host;
+    int32_t* x_dev;
+    int32_t* y_dev;
+};
+
+struct StepResult {
+    double loss = 0.0;       // mean over ranks
+    double lr = 0.0;
+    double grad_norm = 0.0;  // before clipping
+    double step_ms = 0.0;    // wall time of the whole step
+};
+
+// One training step in the fixed order above, on the loader's next batch
+// (B, T from the loader). Phase times ACCUMULATE into *timer. Shared by
+// train_run and the bench app, so benchmarks time exactly the training step.
+StepResult train_step(Model* model, DataLoader* loader, const TrainConfig& tc, int step, const StepBuffers& buf,
+                      PhaseTimer* timer);
 
 // Run the full loop for cfg (validated with config_validate; CHECKs on any
 // error). comm_init must have been called.
@@ -83,6 +106,15 @@ std::string run_dir(const Config& cfg);
 // counts and dataset lines; world_size is recorded as given.
 std::string manifest_text(const Config& cfg, const Model* model, uint64_t train_tokens,
                           uint64_t steps_per_epoch, int world_size);
+
+// The '#' metadata lines of a manifest (date, git, build, compiler, flags,
+// device, CPU, cores, RAM, world size); shared by manifest_text and bench.
+std::string build_info_text(int world_size);
+
+// CPU model from /proc/cpuinfo ("unknown" elsewhere), and the git hash the
+// Makefile compiled in ("<hash>", "<hash>-dirty" or "unknown").
+std::string cpu_model_name();
+const char* build_git_hash();
 
 // mkdir -p; CHECKs on failure.
 void make_dirs(const std::string& path);
