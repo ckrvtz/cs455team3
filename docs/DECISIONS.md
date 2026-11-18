@@ -1470,3 +1470,41 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   in B0.2.
 - `ROADMAP_CUDA.md` was updated to match. Its §3 now lists these as
   decided.
+
+## 2026-11-18: CLAUDE.md updated for Phase B
+
+- **Change:** the Phase B proposals (formerly
+  `docs/proposals/CLAUDE_md_phase_B.md`, now removed) were applied to
+  CLAUDE.md, adjusted to the team decisions above:
+  - **Header:** current phase is Phase B (`ROADMAP_CUDA.md`); Phase A waits
+    only on the P6.3 evaluations and P5.3 (D-B9).
+  - **§1.4 and new §1.6 (CUDA rules):** cuBLAS approved for the matrix
+    products only (D-B2); no other GPU libraries; FP32, no fast math or
+    TF32 (D-B4); no float atomics (D-B3); the target M2000M with nvcc 12.9,
+    never CUDA 13.x (D-B1). The former §1.6–1.7 are now §1.7–1.8, and the
+    one reference to the old number (`.gitignore`) was updated.
+  - **§2 workflow:** GPU verification ("NOT RUN ON A GPU" when no GPU is
+    available); the measurement procedure from the stale-build correction;
+    extra report items for CUDA tasks.
+  - **§3 commands:** the planned CUDA targets (from B0.2), `make equiv`,
+    `make MODE=profile`, the `CUDA_ARCH`/`NVCC`/`MPICXX` variables, and the
+    nvcc flags and link libraries.
+  - **§4 invariants 12–15:**
+    - no allocation or host sync inside ops; the cuBLAS handle and scratch
+      live only in `backend_cuda`;
+    - `dev_init`/`dev_peak_bytes` (D-B8);
+    - per-family `.cu` files (D-B11);
+    - one test suite for every build (D-B7).
+  - **§5 CUDA code style.**
+  - **§6 equivalence testing.**
+  - **§7 CUDA benchmark and profiling rules** (same-machine speedups,
+    attention mode stated).
+  - **§10 must-nots** (no GPU claims without output; no float atomics or
+    other GPU libraries).
+  - **§11 DoD item** for GPU verification.
+  - **§13** now describes all phases, with Phase B current.
+- **Reason:** the team decided ROADMAP_CUDA.md §3 (previous entry) and
+  asked for the proposals to be applied.
+- **Impact:** working rules only; no code or contract change.
+  `ROADMAP_CUDA.md` §11 now points to CLAUDE.md, which wins if the two ever
+  disagree.

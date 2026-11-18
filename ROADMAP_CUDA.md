@@ -777,8 +777,9 @@ Phase B must leave these true:
 
 ## 11. LLM working protocol for Phase B
 
-These complement CLAUDE.md; see the proposed CLAUDE.md changes recorded
-with this roadmap.
+These are now part of CLAUDE.md (applied 2026-11-18: §1.6 CUDA rules, §2
+GPU verification and measurement procedure, §3 commands, §4.12–4.15, §5–§7,
+§10, §11). If this list and CLAUDE.md ever disagree, CLAUDE.md wins.
 
 1. **Where code is verified.** CUDA code is Done only after it has been
    compiled with `nvcc` AND run on an NVIDIA GPU, with the commands and

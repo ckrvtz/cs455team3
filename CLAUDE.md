@@ -1,8 +1,13 @@
 # CLAUDE.md: Rules for LLM-Assisted Development
 
-Project: TinyStories small-scale transformer language model, trained in four modes (serial, CUDA, serial+MPI, CUDA+MPI). Current phase: **Phase A, serial baseline**.
+Project: TinyStories small-scale transformer language model, trained in four modes (serial, CUDA, serial+MPI, CUDA+MPI). Current phase: **Phase B, CUDA on a single GPU** (`ROADMAP_CUDA.md`). Phase A (serial) is complete except the manual story evaluations (P6.3 pilot) and the P5.3 review (D-B9).
 
-Read this file fully at the start of every session. Then read the relevant section of `ROADMAP.md` for the task you were given. `ROADMAP.md` is the technical specification; this file is the working agreement.
+Read this file fully at the start of every session. Then read the relevant section of the roadmap for the task you were given:
+- **Phase B tasks** (`B0.1` ... `B7.2`): `ROADMAP_CUDA.md`. Its §3 holds the team decisions (D-B1 ... D-B12).
+- **Phase A tasks** (`P*.*`) and every contract (§2, §4, §6, §8, §9, §10, §12): `ROADMAP.md`. It remains the base specification.
+- **Per-kernel requirements:** `docs/HANDOFF.md`.
+
+The roadmaps are the technical specification; this file is the working agreement.
 
 ---
 
@@ -11,10 +16,16 @@ Read this file fully at the start of every session. Then read the relevant secti
 1. **Language:** all model, data, training, and tooling code that ships is **C/C++ (C++17)**, plus CUDA (`.cu`) and OpenMPI only in the builds that call for them. Build tooling may be shell scripts, Makefiles, `.json`, `.txt`, `.cfg`, spreadsheets.
 2. **No Python in the deliverable.** Python/PyTorch is allowed only under `dev_only/` for offline planning, golden-file generation, validation, plots, and reports. Nothing in `make`, `make test`, `make dist`, or any run script may call Python or read a file that only Python can produce at build/test time. Golden data files generated offline are committed as plain data (`.bin`, `.txt`, `.json`) under `tests/golden/`.
 3. **Bespoke model code.** The tokenizer algorithm, transformer ops, backward passes, optimizer, data loader, and training loop must be written for this project. Do **not** paste or closely paraphrase code from llm.c, nanoGPT, GGML, PyTorch internals, or similar. If a snippet or idea is adapted from any open source work, stop and tell the user, then record it in `THIRD_PARTY.md` (name, URL, version/commit, license, what was used, where) before finishing the task.
-4. **Open source libraries** are allowed only with citation in `THIRD_PARTY.md`, and **only after the user approves the specific library**. Do not add dependencies on your own. Standard library, OpenMPI, and CUDA toolkit libraries (cuBLAS etc., in later phases) are the expected set.
+4. **Open source libraries** are allowed only with citation in `THIRD_PARTY.md`, and **only after the user approves the specific library**. Do not add dependencies on your own. Standard library, OpenMPI, the CUDA runtime and **cuBLAS** (approved, D-B2) are the expected set.
 5. **Serial baseline purity:** no OpenMP, threads, SIMD intrinsics, or BLAS in the serial build. Compiler auto-vectorization at `-O3 -march=native` is fine. `-ffast-math` is forbidden.
-6. **Never fabricate results.** Do not invent loss values, timings, speedups, or test outcomes. Report only what you actually ran, with the command. If you could not run something, say so.
-7. **Never commit or generate large data.** `data/` and `runs/` are gitignored. Golden test files must stay small (target under a few hundred KB each).
+6. **CUDA rules** (Phase B, `ROADMAP_CUDA.md` §3):
+   - **cuBLAS:** only for the matrix products: `matmul_forward/backward` and the batched GEMMs inside `attention_forward/backward` (D-B2). Every other kernel is written for this project.
+   - **No other GPU libraries** (cuDNN, CUTLASS, Thrust, CUB, FlashAttention, ...) without approval.
+   - **Precision:** FP32 only (`double` in the gradcheck build). No `--use_fast_math`, no TF32 or reduced precision, and no fast-math intrinsics (`__expf`, `__fdividef`, ...) without approval (D-B4).
+   - **Determinism:** no floating-point atomics in our kernels. Every reduction has a fixed order (D-B3).
+   - **Target:** NVIDIA Quadro M2000M (sm_50, 4 GB), driver 580.178.04, **nvcc 12.9** (D-B1). Do not move to a CUDA 13.x toolkit: it cannot target sm_50.
+7. **Never fabricate results.** Do not invent loss values, timings, speedups, or test outcomes. Report only what you actually ran, with the command. If you could not run something, say so.
+8. **Never commit or generate large data.** `data/` and `runs/` are gitignored. Golden test files must stay small (target under a few hundred KB each).
 
 ---
 
@@ -23,6 +34,13 @@ Read this file fully at the start of every session. Then read the relevant secti
 - **One task per session/prompt** (a ROADMAP task ID such as `P3.2`). Do not start adjacent tasks, refactor unrelated code, or "improve" files outside the task's scope. If you spot a problem elsewhere, report it at the end instead of fixing it.
 - **Before coding:** state in 3-6 lines which ROADMAP task and sections you are following, which files you will create or touch, and any ambiguity. If the spec is ambiguous or two sections conflict, **ask** instead of guessing. If the user is unavailable, choose the option most consistent with ROADMAP, implement it, and flag it clearly.
 - **Before declaring done:** run `make test` (and `make debug` tests when you touched memory handling) and show the real output summary. A task is done only when its ROADMAP DoD criteria pass.
+- **GPU verification (Phase B).** CUDA code is done only after it has been compiled with `nvcc` and run on an NVIDIA GPU, with the real output in the report: `nvidia-smi` (GPU name, driver), `nvcc --version`, and the test summary.
+  - The cloud development container has **no GPU**. There, write the code and run every CPU-side check: the CPU build, `make test`, and a compile-only `nvcc` check if a toolkit is installed.
+  - Then state plainly **"NOT RUN ON A GPU"**, with the exact commands for the user to run on the GPU machine, and leave the task open until that output is back.
+- **Measurement procedure.** These rules come from the stale-build correction in `docs/DECISIONS.md`.
+  - After a mutation check (plant a bug, confirm the test fails), restore the file and `touch` it, so `make` recompiles it.
+  - Rebuild the configuration from scratch (`make clean`, or `rm -rf build/<tag>`) before recording any number in DECISIONS, RUNS, a CSV or a README.
+  - Every recorded number names its machine: CPU, plus GPU and driver for CUDA.
 - **Tests first for numerics.** For any op or model change, write or update the test (FD check, golden compare, or hand-computed case) in the same change as the implementation.
 - **Do not edit golden files** (`tests/golden/*`) or contract headers (`ops.h`, `backend.h`, `comm.h`, `layout.h`, checkpoint/log formats) to make a test pass. If a contract must change, stop, explain the CUDA/MPI impact, propose the change, and wait for approval. Approved changes get an entry in `docs/DECISIONS.md` (date, change, reason, impact on other builds).
 - **Keep diffs small and reviewable.** Prefer new files over giant rewrites. Do not reformat files you did not need to touch.
@@ -34,6 +52,12 @@ Read this file fully at the start of every session. Then read the relevant secti
   4. Update the summary paragraph, the test count, the **Next** section, and the **Last updated** line (date, last completed task, current commit).
   5. Commit it on its own (message: "Update STATUS.md through <task>"), separate from any task's code.
 - **Final report format** (end of every task, short): what was implemented (files), test commands run and results, README changes (or "none needed"), deviations or decisions, open issues, suggested next task. No long recaps.
+  - **CUDA tasks also report:**
+    - the GPU and CUDA version used;
+    - the worst rel-L2 per op touched;
+    - sanitizer status;
+    - for any timing, whether attention ran full-tile (cuBLAS) or causal-tile;
+    - "NOT RUN ON A GPU" where that applies.
 
 ---
 
@@ -44,12 +68,26 @@ make                      # release serial build -> bin/train_serial, bin/genera
 make test                 # all unit/integration tests (must pass before any task is "done")
 make debug                # -O0 -g -fsanitize=address,undefined; then run tests under it
 make test REAL=double     # double-precision build used for gradient checks
-make BACKEND=cuda         # (Phase B)   make COMM=mpi   (Phase C)   both (Phase D)
 make dist                 # submission tarball; fails if any .py/.ipynb/requirements*.txt is present
 make clean
+make MODE=profile         # dev-only gprof build (scripts/profile.sh)
+make COMM=mpi             # Phase C; both BACKEND=cuda COMM=mpi: Phase D (stubs until then)
 ```
 
-Release flags: `-O3 -march=native -std=c++17 -Wall -Wextra -Wpedantic`. Code must compile **warning-free**. If a command above is not yet implemented, say so; do not invent a substitute silently.
+Phase B (CUDA). These are planned and implemented in B0.2; until then `make BACKEND=cuda` stops at the toolchain check or the stub:
+
+```
+make BACKEND=cuda                    # CUDA build -> bin/cuda-float/train_cuda, ...
+make BACKEND=cuda test               # the whole suite + test_equiv_ops on the GPU
+make BACKEND=cuda REAL=double test   # double kernels; runs the gradcheck
+make BACKEND=cuda MODE=debug         # -G -lineinfo, with a device sync after every launch
+make BACKEND=cuda sanitize           # tests under compute-sanitizer (memcheck; racecheck/synccheck on equivalence)
+make equiv                           # serial vs CUDA, ROADMAP §10 cross-version protocol (B0.5)
+```
+
+Variables: `CUDA_ARCH` (default `sm_50`), `NVCC` (nvcc 12.9), `MPICXX`.
+
+Release flags: `-O3 -march=native -std=c++17 -Wall -Wextra -Wpedantic`. CUDA adds `nvcc -std=c++17 -O3 -arch=$(CUDA_ARCH) -lineinfo -Wno-deprecated-gpu-targets`, linked with `-lcublas -lcudart`. Code must compile **warning-free**. If a command above is not yet implemented, say so; do not invent a substitute silently.
 
 ---
 
@@ -67,7 +105,15 @@ These exist so CUDA and MPI versions can be added without rewriting the model. S
 8. **Host-only always:** tokenization, data loading, RNG, weight initialization, logging, checkpoint I/O, sampling decisions.
 9. **Shapes and layouts** (row-major; linear weight `[OC, C]`; fused `qkv [B,T,3C]`; `att [B,NH,T,T]`) are as defined in ROADMAP §6.2. Do not change them.
 10. **Compile-time backend selection** via Makefile variables (`BACKEND`, `COMM`, `REAL`). No virtual dispatch or function-pointer tables in hot paths. Headers shared with `.cu` files must stay nvcc-compatible C++17 (no exotic features, no `std::filesystem` or iostream in `ops`/`model` headers).
-11. **Determinism:** own RNG (`xoshiro256**`, Box-Muller). Never use `std::mt19937`, `std::normal_distribution`, `rand()`, or time-based seeds. Avoid unordered-container iteration where it affects numeric results. Same seed ⇒ bit-identical serial runs.
+11. **Determinism:** own RNG (`xoshiro256**`, Box-Muller). Never use `std::mt19937`, `std::normal_distribution`, `rand()`, or time-based seeds. Avoid unordered-container iteration where it affects numeric results. Same seed ⇒ bit-identical serial runs, and bit-identical CUDA runs on the same GPU (D-B3).
+12. **No allocation and no host synchronisation inside ops**, in every backend.
+    - The only device-to-host copy allowed inside ops is the scalar result of `sum_reduce`/`sumsq_reduce`.
+    - The cuBLAS handle and the persistent reduction scratch are created once by `backend_cuda` in `dev_init`. Ops reach them only through the internal header `src/backend/cuda_internal.h` and never create handles or buffers.
+13. **Device setup:** every app calls `dev_init(local_rank)` (0 until Phase D) before any other `dev_*` call. `dev_peak_bytes()` is the memory figure for `bench` (D-B8).
+14. **Kernel files:** one `.cu` file per op family, mirroring the serial `*_cpu.cpp`: `src/ops/{embedding,layernorm,elementwise,matmul,attention,softmax_xent,optim}_cuda.cu` (D-B11).
+    - Shared device helpers go in `src/ops/cuda_common.cuh`, and cuBLAS wrappers in `src/ops/blas_cuda.cuh`.
+    - Kernel-internal helpers live in `.cuh` files, never in `ops.h`.
+15. **One test suite for every build.** The whole suite passes in every build. No test is skipped or weakened in the CUDA build without a DECISIONS entry (D-B7).
 
 ---
 
@@ -82,6 +128,17 @@ These exist so CUDA and MPI versions can be added without rewriting the model. S
 - Comments: each op file starts with a header comment stating shapes, layouts, accumulate/overwrite semantics, and the math. Explain *why* for non-obvious choices (blocking sizes, numerical tricks). Do not narrate trivial code.
 - One responsibility per file; keep `apps/*.cpp` thin (parse args, call library).
 - Logging goes through `logging.h`; never `printf` debug noise into committed code paths.
+- **CUDA code:**
+  - **Error checks:**
+    - every CUDA runtime call goes through `CUDA_CHECK(...)`;
+    - every cuBLAS call goes through `CUBLAS_CHECK(...)`;
+    - every kernel launch is followed by `CUDA_CHECK(cudaGetLastError())`, plus a device sync in `MODE=debug`.
+  - **Kernel structure:**
+    - element-wise kernels use grid-stride loops;
+    - block sizes are powers of two (prefer 256);
+    - indices that multiply two dimensions are `size_t`, cast before multiplying.
+  - **Header comments:** each kernel's comment states its launch configuration, tiling and reduction order. cuBLAS calls state their row-major → column-major mapping (`ROADMAP_CUDA.md` §5.4).
+  - **Optimizations** are documented in `docs/PROFILE_CUDA.md` with their measured effect.
 
 ---
 
@@ -92,15 +149,24 @@ These exist so CUDA and MPI versions can be added without rewriting the model. S
 - Tolerances: float32 vs float64 golden: loss rel err < 1e-5, per-tensor gradient rel-L2 < 1e-4. Double gradcheck: max rel err < 1e-6. Do not loosen a tolerance to get a pass; investigate the bug. If a loosening is genuinely justified, explain it and ask.
 - Tests must be fast: all of `make test` should finish within a few minutes; the smoke-training test under 1 minute. Tests must not require the full dataset or network access (use tiny committed fixtures and generated synthetic data).
 - When a test fails, report the failing assertion and values. Do not delete or weaken the test.
+- **CUDA equivalence:**
+  - Every new kernel comes with its rows in `tests/test_equiv_ops.cpp` in the same change: CUDA vs the serial reference kernels (`ops_ref`), over the shape sweep.
+  - Tests of accumulating ops seed their outputs with non-zero values.
+  - Per-op tolerances are those in `docs/HANDOFF.md` once B0.4 has confirmed them. Model-level equivalence follows the ROADMAP §10 protocol (`make equiv`).
 
 ---
 
-## 7. Performance and honesty rules (serial baseline)
+## 7. Performance and honesty rules
 
 - The serial baseline is the denominator of every speedup in the final report, so it must be **reasonable but honest**: cache-blocked matmul with auto-vectorizable inner loops; no naive strided triple loop; no heroic hand-tuning that CUDA comparisons would not match. Document every optimization applied in the source and in `docs/PROFILE.md`.
 - Serial attention computes only the causal lower triangle. Note this in comments and benchmark docs.
 - Benchmarks follow ROADMAP §12 exactly: fixed workload, 3 warmup steps discarded, median reported, ≥3 runs, machine spec and flags recorded, results written to a CSV by the `bench` app. Never quote a number that is not in a committed CSV.
 - Do not run long jobs (more than ~5 minutes) without telling the user what you are about to run and why. Never start full-dataset serial training; it is infeasible (ROADMAP §13).
+- **CUDA benchmarks:**
+  - Bench CSVs record `version=cuda` and the GPU (`dev_name()`, driver).
+  - Speedups are computed only from committed CSV rows, compare the same machine (serial re-benchmarked on the GPU machine's CPU, B6.4), and name both the CPU and the GPU.
+  - They state whether attention ran full-tile (cuBLAS) or causal-tile; serial is triangular.
+- **Profiling:** `nsys`/`ncu` are dev-time only, like gprof. Their results go in `docs/PROFILE_CUDA.md`.
 
 ---
 
@@ -130,6 +196,8 @@ These exist so CUDA and MPI versions can be added without rewriting the model. S
 - Do not add dropout, KV cache, mixed precision, threading, or other features not in the current phase's tasks.
 - Do not alter golden files, tolerances, or tests to force a pass.
 - Do not claim code "should work" without compiling and running it; do not claim tests pass without running them.
+- Do not claim CUDA code works, or quote kernel timings or speedups, without real output from a GPU run.
+- Do not use floating-point atomics or non-deterministic reductions in kernels, or a GPU library other than cuBLAS, without approval.
 - Do not leave `TODO`/stub code behind a passing test. Unimplemented paths must fail loudly (`CHECK(false, "not implemented: ...")` or `#error`).
 - Do not use `std::regex` for tokenization, `std::rand`, or time-based seeding.
 - Do not silently catch and ignore errors, NaNs, or out-of-range values.
@@ -141,6 +209,7 @@ These exist so CUDA and MPI versions can be added without rewriting the model. S
 - [ ] Implements exactly the ROADMAP task's scope and DoD
 - [ ] Follows layering, backend/comm shims, accumulation convention, and layout contracts
 - [ ] Tests added or updated; `make test` and relevant `make debug`/`REAL=double` runs pass (real output shown)
+- [ ] CUDA tasks: `make BACKEND=cuda test` (and the relevant `REAL=double` / `sanitize` runs) pass ON THE GPU, with the output and the GPU named; otherwise reported as "NOT RUN ON A GPU" and left open
 - [ ] Warning-free build; no sanitizer errors
 - [ ] No Python, new dependency, or contract change introduced without approval
 - [ ] File header comments describe shapes, semantics, and math for any new op
@@ -154,10 +223,15 @@ These exist so CUDA and MPI versions can be added without rewriting the model. S
 
 `B` batch size, `T` sequence length (runtime ≤ max), `C` embedding dim, `NH` heads, `hs = C/NH` head dim, `V` vocab size (10,000), `L` layers, `N = B·T` rows. `OC` output channels of a linear layer. `gB = micro_batch × world_size` global batch. Presets: `smoke` (1L, 32d, T=32), `small` (2L, 128d, 4H, T=256), `base` (4L, 256d, 8H, T=256). "Tied" = output head shares `wte`.
 
-## 13. Future phases (context only; do not implement in Phase A)
+## 13. Phases
 
-- **Phase B (CUDA, single node):** `ops_cuda.cu` implementing the identical `ops.h` signatures; device versions of the backend shim; batched-GEMM attention; same tests via the cross-version equivalence protocol (ROADMAP §10).
+- **Phase A (serial):** complete except the P6.3 manual story evaluations and the P5.3 review (D-B9). `ROADMAP.md`.
+- **Phase B (CUDA, single GPU), current:** `ROADMAP_CUDA.md`.
+  - The CUDA implementation of the identical `ops.h` signatures, one `.cu` per family, with cuBLAS for the matrix products.
+  - The device backend shim (`dev_init`, `dev_peak_bytes`).
+  - Batched-GEMM attention.
+  - The same tests, plus the equivalence tests and the §10 protocol.
 - **Phase C (serial + MPI):** `comm_mpi.cpp` with `MPI_Bcast` of the flat params after init and one `MPI_Allreduce` of the flat grads per step; rank-sharded loader; Slurm scripts.
-- **Phase D (CUDA + MPI):** device buffers passed to MPI (CUDA-aware MPI if available, otherwise staged through host); same step order.
+- **Phase D (CUDA + MPI):** one rank per GPU. `dev_init(local_rank)`; device buffers passed to MPI (CUDA-aware MPI if available, otherwise staged through one pre-allocated host buffer); same step order.
 
-Keep Phase A code free of anything that would block these paths, but do not implement them early.
+Keep Phase B code free of anything that would block Phases C and D (`ROADMAP_CUDA.md` §9), but do not implement them early.
