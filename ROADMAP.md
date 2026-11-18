@@ -447,7 +447,7 @@ Week mapping follows the proposal. **Owner** column is the proposal's suggested 
 
 | ID | Task | DoD |
 |---|---|---|
-| P7.1 | `bench` app (§12) emitting one CSV row per run | reproducible within ±3% across 3 runs |
+| P7.1 | `bench` app (§12) emitting one CSV row per run. **Must handle the cold page cache:** random-chunk reads of the mmapped token file are slow until it is cached, for far more than 3 warmup steps (measured in P4.2: smoke run 54.5 s cold vs 5.0 s warm, nearly all in `data_ms`; see `docs/DECISIONS.md`, "Training loop details"). Proposed: `bench` reads the whole token file once before the first timed step and records that it did; the rule is the same for every build and gets a DECISIONS entry plus a §12 line when adopted | reproducible within ±3% across 3 runs |
 | P7.2 | Profile serial (`perf` or `gprof`, dev-time only): confirm matmul dominates; record % by phase in `docs/PROFILE.md` | profile committed as text |
 | P7.3 | Complete `README.md` (maintained since P3.1): add exact commands to reproduce a smoke run, a `small` run and a benchmark, plus the machine spec table; re-verify every command from a clean clone | a teammate can reproduce from a clean clone in under 30 min of attended time; every README command verified in that run |
 | P7.4 | `docs/HANDOFF.md`: for each `ops::` function, a one-paragraph note of what its CUDA kernel must preserve (shapes, accumulation, tolerance), plus the memory arena sizes for each preset | complete for every function in `ops.h` |
