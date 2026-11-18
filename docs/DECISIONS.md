@@ -893,3 +893,38 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   `make test REAL=double` 31 s; 27/27 in each.
 - **Impact:** these tests are the §10 reference that Phases B–D must pass
   unchanged on their own builds.
+
+## 2026-11-18: P5.2 run setup; run executed off-container (approved)
+
+- **Change:**
+  - **`configs/small.cfg` run values** (they had been placeholders "set in
+    P5.2"):
+    - `max_steps` 5000 → 2400: one epoch of the 20M-token subset is 2,441
+      steps, so no sequence repeats.
+    - `eval_every` 250 → 100.
+    - `ckpt_every` 1000 → 250.
+
+    Model and optimizer values are unchanged.
+  - **Data:** `prepare_data --max_tokens 20000000` gives 19,999,905 tokens
+    and 93,024 stories, with train coverage 99.8957%, val coverage 99.8648%
+    and vocab hash `4de4b6c3947630ff`.
+  - **`dev_only/plot_log.py`:** draws SVG curves from `log.csv` using the
+    standard library only, so no plotting dependency (e.g. matplotlib) is
+    added.
+  - **`docs/RUNS.md`:** exact commands, a resume recipe, and the plateau
+    criterion, fixed before the run.
+- **Where it runs (approved):** the full run executes on a teammate machine
+  or the cluster, not in this cloud container.
+  - Measured here: 3.8 s/step warm, which puts the run at about 2.7 h
+    including validation.
+  - This container is reclaimed when idle and caps one background command
+    at 2 h.
+  - The returned `log.csv` is then plotted and assessed against the
+    criterion. Results are recorded only from that file.
+- **Pilot (here):** the production command shortened to 20 steps.
+  - Loss 9.2461 → 7.4608; val 9.2382 at init, then 7.9299 / 7.4273.
+  - Resuming in place from step 10 reproduced `ckpt_20.bin` byte for byte.
+  - It validates the pipeline only.
+- **Impact:** none on code or formats. The `small` preset is also benchmark
+  workload W-A, which uses fixed step counts, so `max_steps` there is
+  overridden.

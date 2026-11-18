@@ -127,6 +127,16 @@ bin/train_serial --config configs/smoke.cfg --ckpt_every 100 --resume runs/smoke
   token file is read at random positions, and those reads are slow until the
   file is in the OS page cache; the extra time shows up in `data_ms`.
 
+## Long runs
+
+Real training runs and their results are recorded in
+[`docs/RUNS.md`](docs/RUNS.md). Loss curves are drawn from `log.csv` by an
+offline script (standard-library Python, developers only):
+
+```bash
+python3 dev_only/plot_log.py curves.svg runs/<run_name>/log.csv
+```
+
 ## Golden test data (developers only)
 
 Tests compare against small reference files committed in `tests/golden/`;
