@@ -11,7 +11,7 @@
 //   - output buffers must not overlap input buffers;
 //   - layouts are row-major (§6.2). Sizes that can exceed 2^31 are size_t.
 //
-// This file grows task by task. Declared so far: P2.1 and P2.2 forward ops.
+// This file grows task by task. Declared so far: P2.1-P2.3 forward ops.
 #pragma once
 
 #include <cstddef>
@@ -47,6 +47,13 @@ void residual_forward(real_t* out, const real_t* a, const real_t* b, size_t n);
 //   out[n,o] = sum_c inp[n,c] * W[o,c] + (bias ? bias[o] : 0)
 void matmul_forward(real_t* out, const real_t* inp, const real_t* W, const real_t* bias, int N, int C,
                     int OC);
+
+// Causal multi-head attention on fused qkv[B,T,3C] -> out[B,T,C]; att[B,NH,T,T] saved.
+//   hs = C / NH; for token (b,t): Q = qkv[b,t,0:C], K = qkv[b,t,C:2C], V = qkv[b,t,2C:3C],
+//   head h occupies [h*hs, (h+1)*hs) inside each third.
+//   att[b,h,t,t2] = softmax_{t2<=t}( Q_h(t) . K_h(t2) / sqrt(hs) ), and exactly 0 for t2 > t
+//   out[b,t,h*hs+i] = sum_{t2<=t} att[b,h,t,t2] * V_h(t2)[i]
+void attention_forward(real_t* out, real_t* att, const real_t* qkv, int B, int T, int C, int NH);
 
 }  // namespace ops
 }  // namespace tslm

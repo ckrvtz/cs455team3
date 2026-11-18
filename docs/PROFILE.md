@@ -27,7 +27,14 @@ of each lane's in-order partial sum + scalar tail). This differs from a naive
 left-to-right sum by normal rounding error, which the matmul test checks
 against a rigorous order-independent error bound.
 
-## Serial attention (P2.3, to be added)
+## attention_forward (`src/ops/attention_cpu.cpp`), P2.3
 
-Will compute only the causal lower triangle (ROADMAP §8). That will be
-documented here and in the benchmark notes when implemented.
+| Technique | Why |
+|---|---|
+| **Causal lower triangle only** | Scores, softmax and att·V visit only key positions t2 ≤ t, about half the work of a full T × T tile. The masked upper triangle of `att` is written as exact zeros, not computed. **Benchmark note:** a CUDA kernel that computes the full tile and masks it does about 2× the attention arithmetic. Speedups must be read with that in mind, and the bench notes for every version must say whether attention is triangular or full. |
+| Three explicit stages per (b, h) | Scores for all rows, then softmax for all rows, then att·V. This mirrors the Phase B batched-GEMM, masked-softmax, batched-GEMM design. Not fused, on purpose. |
+| Lane-partial score dot products | Same `LANES` technique as matmul (vectorizes without `-ffast-math`, deterministic). |
+| att·V as an in-order multiply-add per key | `o[i] += a * v[i]` over the head dimension is element-wise, so it vectorizes with no reduction reordering. |
+
+Not done: no fusing of the stages, no tiling over T (T ≤ 256, so each head's
+rows fit in cache), no threads.
