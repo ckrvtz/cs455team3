@@ -252,3 +252,36 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **Impact:** CUDA `ops_cuda.cu` (Phase B) implements the same signatures
   under the same no-overlap rule. Its LayerNorm reductions may reorder sums,
   which the §10 equivalence tolerances allow.
+
+## 2026-11-18: Model API types (P2.5), needs team confirmation
+
+- **Change** relative to the ROADMAP §8 Model API sketch:
+  1. **Loss type:** `model_forward` returns **`double`** (the sketch says
+     `float`). The value is the host-side mean of a double `sum_reduce`.
+  2. **Logits type:** `model_logits` returns **`const real_t*`** (the sketch
+     says `const float*`).
+  3. **Struct visibility:** `struct Model` is defined in `model.h` instead of
+     being opaque, so the training loop and optimizer can reach the
+     `params`/`grads`/`m`/`v` pointers and layouts. The sketch already lists
+     those members.
+  4. **Device tokens:** `tokens`/`targets` passed to `model_forward` are
+     device buffers (host memory in the CPU build). Per §9, the loop
+     `copy_h2d`s them during the data phase.
+  5. **`model_summary()`:** added, so apps can print parameter counts and the
+     activation arena in MB at startup (P2.5 DoD).
+- **Reason:**
+  1. CLAUDE.md §5 requires double for loss accumulations, and the P3.6
+     `REAL=double` finite-difference gradcheck needs a double-precision loss.
+     A `float` return would cap it near 1e-7 relative.
+  2. In the `REAL=double` build the logits are doubles, so a `float*` cannot
+     point at them.
+  - In the release float build both types hold exactly the same values as
+    the sketch's.
+- **Impact:** CUDA/MPI builds use the same signatures. `model_logits` is a
+  device pointer there, so generation must `copy_d2h` the last-position
+  slice. No file format changes.
+- **Init (§2.3) as implemented:** tensors are classified by name suffix
+  (`_b` → 0, `_g` → 1, `proj_w`/`fcproj_w` → N(0, 0.02/√(2L)), other 2-D
+  weights → N(0, 0.02)). Tensor *i* uses `Rng(seed, i)`, as §4.6 requires.
+- **Measured:** fresh `base` model on `data/val.bin` (seed 1337, 2×4×256
+  tokens): initial loss **9.2641**, versus ln(10000) = 9.2103 (DoD ±0.15).
