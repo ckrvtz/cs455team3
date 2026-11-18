@@ -55,7 +55,7 @@ Sources: `project-proposal.pdf` (CUDA plan and timeline), `TinyStories.pdf`
      products inside `attention_*`;
    - every other kernel is written for this project.
 2. **Equivalence with serial** under the ROADMAP §10 cross-version protocol,
-   and the whole existing test suite (30 test programs, 154 test cases)
+   and the whole existing test suite (30 test programs, 155 test cases)
    passing in the CUDA build, including:
    - golden PyTorch comparisons;
    - the double-precision gradcheck;

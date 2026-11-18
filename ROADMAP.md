@@ -134,7 +134,7 @@ ops/ (ops.h + cpu impl)   backend/ (memory shim)   comm/ (collectives shim)
 optim/ (adamw, clip)      data/ (tokenizer, loader; HOST only, always)
 ```
 
-- **`ops.h`** declares every numeric kernel as a free function in `namespace ops` taking raw pointers + dimensions (§8). `ops_cpu.cpp` implements them now; `ops_cuda.cu` implements the *same signatures* later. `model/` calls only `ops::`, never loops over tensors itself.
+- **`ops.h`** declares every numeric kernel as a free function in `namespace ops` taking raw pointers + dimensions (§8). The serial `src/ops/*_cpu.cpp` files implement them now; the CUDA build implements the *same signatures* in one `.cu` file per op family (`src/ops/<family>_cuda.cu`, `ROADMAP_CUDA.md` D-B11). `model/` calls only `ops::`, never loops over tensors itself.
 - **`backend.h`** (memory shim): `dev_malloc(bytes)`, `dev_free`, `dev_memset`, `copy_h2d`, `copy_d2h`, `copy_d2d`, `dev_sync()`, `dev_name()`. CPU implementation = `malloc/memset/memcpy` and a no-op sync. `model/` and `train/` must never call `malloc`/`new`/`memcpy` on tensors directly. **All tensor memory goes through the shim**, so in CUDA builds those pointers are device pointers and model code is unchanged.
 - **`comm.h`** (collectives shim): `comm_init(argc, argv)`, `comm_rank()`, `comm_size()`, `comm_broadcast(real_t*, size_t n, int root)`, `comm_allreduce_avg(real_t*, size_t n)`, `comm_allreduce_sum_double(double*, int n)`, `comm_barrier()`, `comm_finalize()`. Serial implementation = size 1, rank 0, all collectives no-ops.
 - **`timer.h`**: `PhaseTimer` with named phases (`data, fwd, bwd, comm, opt`). In serial uses `steady_clock`. Later builds call `dev_sync()` before reading the clock. Call sites must already be in place.

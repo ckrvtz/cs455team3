@@ -1508,3 +1508,21 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **Impact:** working rules only; no code or contract change.
   `ROADMAP_CUDA.md` §11 now points to CLAUDE.md, which wins if the two ever
   disagree.
+
+## 2026-11-18: Pre-Phase-B cleanup
+
+- **Docs aligned with the team decisions** (wording only; no contract
+  change):
+  - `ROADMAP.md` §4.2 now says the CUDA build implements `ops.h` in one `.cu`
+    per op family (D-B11), not a single `ops_cuda.cu`.
+  - `docs/HANDOFF.md` is addressed to the per-family files; its matmul and
+    attention notes reference D-B2 (cuBLAS SGEMM and strided-batched GEMMs,
+    full-tile attention).
+  - `ROADMAP_CUDA.md` §1 test count: 155 cases (the D-B8 `dev_init` test
+    added one).
+- **Repo hygiene:** removed the placeholder `.gitkeep` files from
+  `src/backend/`, `src/comm/` and `src/train/`, which now hold real files.
+  `scripts/slurm/.gitkeep` stays until Phase C.
+- **Deferred to B0.3:** the test helpers duplicated across 4–6 test files
+  (`tmp_dir`, `ensure_comm`, `read_file`, `write_tokens`) move into a shared
+  test header when B0.3 touches those files for `devbuf.h`.

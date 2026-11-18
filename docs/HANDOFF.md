@@ -1,6 +1,7 @@
 # Hand-off to Phases B–D: what each kernel must preserve
 
-This is for whoever writes `src/ops/ops_cuda.cu` (Phase B) and the MPI
+This is for whoever writes the CUDA kernels (Phase B: one file per op
+family, `src/ops/<family>_cuda.cu`, `ROADMAP_CUDA.md` D-B11) and the MPI
 builds (Phases C, D). The contract is `include/tslm/ops.h`: the signatures
 are frozen, and the serial implementations in `src/ops/*_cpu.cpp` are the
 reference. Each function below gets one paragraph covering:
@@ -119,7 +120,8 @@ These come from `ops.h` and CLAUDE.md §4.
   head (OC = V = 10,000).
 - **Profile:** this and `matmul_backward` are 81% of serial sampled time
   (`docs/PROFILE.md`), so they decide the speedup. cuBLAS SGEMM with the
-  transposes mapped correctly is the expected implementation.
+  transposes mapped correctly is the implementation (team decision D-B2;
+  mapping in `ROADMAP_CUDA.md` §5.4).
 - **Tolerance:** rel-L2 ≤ 1e-5 in FP32 (no TF32).
 
 **`matmul_backward(dinp, dW, dbias, dout, inp, W, N, C, OC)`.**
@@ -141,9 +143,10 @@ These come from `ops.h` and CLAUDE.md §4.
 - **The upper triangle (t2 > t) of `att` must be exactly 0.** It is saved
   for backward, and the tests check it.
 - **Lower triangle only:** serial computes only the causal lower triangle.
-  A CUDA batched-GEMM version may compute the full T×T tile and mask it,
-  but then does about 2× the score/att·V arithmetic, and benchmark notes
-  must say so (`docs/PROFILE.md`).
+  The CUDA version uses cuBLAS strided-batched GEMMs (D-B2,
+  `ROADMAP_CUDA.md` §5.6). Those compute the full T×T tile, which is then
+  masked, so it does about 2× the score/att·V arithmetic, and benchmark
+  notes must say so (`docs/PROFILE.md`).
 - **Causality:** must be exact. Logits at positions < t do not change when
   token t changes (`test_signoff`, `memcmp`).
 - **Tolerance:** out and att rel-L2 ≤ 1e-5.
