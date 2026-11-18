@@ -1251,3 +1251,30 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   attended time is the quick start plus starting the unattended jobs. The
   "under 30 min" part is a statement about a person's time, so it can only
   be confirmed by a teammate repeating it.
+
+## 2026-11-18: CUDA/MPI hand-off notes (P7.4)
+
+- **`docs/HANDOFF.md`:** one paragraph for each of the 18 `ops.h` functions
+  (checked mechanically against the header). Each covers shapes and layout,
+  overwrite vs accumulate, the special cases the serial tests rely on, and
+  a tolerance against serial. The special cases include:
+  - repeated-token accumulation;
+  - the tied-`wte` gradient that must never be overwritten;
+  - the exact-zero causal upper triangle of `att`;
+  - the key-bias structural zero;
+  - the stable GELU form;
+  - double reductions for the loss and the clip norm;
+  - AdamW bias corrections computed once in double.
+- **Tolerances:** the per-op tolerances are marked PROPOSED (serial accuracy
+  plus room for reordered float sums), for Phase B to confirm or revise.
+  The binding criteria remain the ROADMAP §10 cross-version protocol and the
+  unchanged serial test suite.
+- **Memory per preset:** for both head variants, computed with
+  `make_param_layout` / `make_act_layout` (float):
+  - `small` B=32, T=256: 1,267.9 MB tied;
+  - `base`: 2,050.4 MB tied;
+  - `smoke`: 20.3 MB tied.
+
+  Logits, probs and d_logits are 312.5 MB each for `small` and `base`.
+- **Not a contract change:** `ops.h` is unchanged; this document describes
+  it.

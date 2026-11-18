@@ -337,6 +337,7 @@ apps/           command-line tools (thin main()s)
 tests/          unit tests (test_*.cpp), golden data, and a 208 KB real-data fixture (tests/fixtures/)
 configs/        presets       scripts/  data download, bench.sh, profile.sh
 eval/           fixed prompts, scoring rubric and scores template       bench/  committed benchmark CSVs
-docs/           DECISIONS.md (decision log), PROFILE.md (optimizations + profile), RUNS.md (long runs), STATUS.md
+docs/           DECISIONS.md (decision log), PROFILE.md (optimizations + profile), RUNS.md (long runs),
+                HANDOFF.md (what CUDA/MPI kernels must preserve, memory per preset), STATUS.md
 dev_only/       offline Python (golden files, fixture cutting, loss plots); never built or shipped
 ```
