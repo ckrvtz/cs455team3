@@ -231,3 +231,24 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   of `bwd_ms`, record the split in `docs/PROFILE.md` instead of adding a
   column. Making backward overwrite on first write instead of zeroing would
   change the `+=` convention and needs approval.
+
+## 2026-11-18: ops.h conventions (P2.1)
+
+- **Change:** `include/tslm/ops.h` is created with the four P2.1 forward
+  signatures, copied exactly from ROADMAP §8. Later tasks add the remaining
+  §8 functions as they implement them, so no declared op lacks a definition.
+  - **Aliasing:** output buffers must not overlap input buffers in any op.
+    That leaves CUDA kernels free to reorder.
+  - **File layout:** CPU kernels go in one file per op family,
+    `src/ops/<family>_cpu.cpp`. The `_cpu` suffix means only `BACKEND=cpu`
+    compiles them.
+  - **LayerNorm numerics:** two passes (mean, then centered sum of squares),
+    accumulated in double. `mean`/`rstd` are rounded to `real_t` once, and
+    those rounded values are both used for the normalization and saved for
+    backward.
+- **Reason:** CLAUDE.md §4.2 and §5. The double accumulation and the
+  consistent saved statistics help the float32-vs-float64 golden tolerances
+  (§10).
+- **Impact:** CUDA `ops_cuda.cu` (Phase B) implements the same signatures
+  under the same no-overlap rule. Its LayerNorm reductions may reorder sums,
+  which the §10 equivalence tolerances allow.
