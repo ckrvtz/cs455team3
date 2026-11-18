@@ -185,6 +185,16 @@ scripts/bench.sh W-A        # small, 50 steps, B=32, 3 runs (about 10 min serial
 - **Conditions:** run benchmarks on an idle machine, from a clean release
   build (`make clean && make`).
 
+### Profiling (developers)
+
+```bash
+scripts/profile.sh          # gprof flat profile of the W-A step (13 steps, ~1 min) -> docs/profile/serial_W-A_gprof.txt
+```
+
+It builds `make MODE=profile` (the release flags plus `-pg`, in
+`bin/profile-float/`; never used by `make test` or `make dist`). The
+analysis is in [`docs/PROFILE.md`](docs/PROFILE.md).
+
 ## Long runs
 
 Real training runs and their results are recorded in

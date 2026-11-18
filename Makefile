@@ -6,6 +6,7 @@
 #   make test REAL=double      double-precision build (gradient checks)
 #   make BACKEND=cuda          Phase B   | make COMM=mpi  Phase C | both: Phase D
 #   make dist                  submission tarball (fails if Python files remain)
+#   make MODE=profile          dev-only gprof build (release flags + -pg) -> bin/profile-float/
 #   make clean
 #
 # Selection is compile-time only: BACKEND/COMM/REAL become -D macros checked by
@@ -28,8 +29,8 @@ endif
 ifeq ($(filter $(REAL),float double),)
 $(error REAL must be float or double (got '$(REAL)'))
 endif
-ifeq ($(filter $(MODE),release debug),)
-$(error MODE must be release or debug (got '$(MODE)'))
+ifeq ($(filter $(MODE),release debug profile),)
+$(error MODE must be release, debug or profile (got '$(MODE)'))
 endif
 
 # ---- toolchain and flags
@@ -46,6 +47,11 @@ ifeq ($(MODE),release)
 # -O3 -march=native only; -ffast-math is forbidden (CLAUDE.md §1.5).
 OPTFLAGS := -O3 -march=native
 LDSAN    :=
+else ifeq ($(MODE),profile)
+# Dev-time profiling only (P7.2, scripts/profile.sh): the release flags plus
+# gprof instrumentation. Never used by make test or make dist.
+OPTFLAGS := -O3 -march=native -pg
+LDSAN    := -pg
 else
 OPTFLAGS := -O0 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 LDSAN    := -fsanitize=address,undefined
