@@ -7,6 +7,8 @@
 //   - malformed prompt files are rejected with the line number
 //   - load_prompts returns the FNV-1a 64 of the file bytes
 //   - format_samples produces exactly the documented layout
+//   - eval/scores.csv (P6.3) starts with the fixed scoring header (ROADMAP D6:
+//     the scoring CSV format stays stable)
 #include "test.h"
 
 #include <cstdio>
@@ -104,6 +106,15 @@ TEST(samples_layout_is_exact) {
     EXPECT_EQ(format_samples(h, p, g, s), want);
     std::string out;
     EXPECT_TRUE(test::dies_with_abort([&] { format_samples(h, p, g, {}); }, &out));
+}
+
+TEST(scores_csv_header) {
+    std::FILE* f = std::fopen("eval/scores.csv", "rb");
+    ASSERT_TRUE(f != nullptr);
+    char line[256] = {0};
+    ASSERT_TRUE(std::fgets(line, sizeof(line), f) != nullptr);
+    std::fclose(f);
+    EXPECT_EQ(std::string(line), std::string("milestone,prompt_id,grammar,consistency,sense,rater,notes\n"));
 }
 
 TEST_MAIN()

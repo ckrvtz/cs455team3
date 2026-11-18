@@ -162,6 +162,9 @@ bin/eval --ckpt runs/smoke/ckpt_latest.bin        # writes runs/smoke/samples_20
   compare line by line. The same binary and checkpoint reproduce the file
   byte for byte.
 - **Vocab map:** `--vocab_map` follows the same rule as for `generate`.
+- **Scoring:** completions are scored by hand, 0–5 on grammar, consistency
+  and sense, following [`eval/RUBRIC.md`](eval/RUBRIC.md). Scores go in
+  `eval/scores.csv`.
 
 ## Long runs
 

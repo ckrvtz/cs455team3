@@ -1058,3 +1058,28 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   salad. Scoring is P6.3.
 - **Mutation evidence:** the tests failed on each of two planted bugs: a
   dropped prompt-id ordering check, and a dropped "stopped at EOS" marker.
+
+## 2026-11-18: Scoring template and rubric (P6.3); pilot pending
+
+- **Change:**
+  - **`eval/scores.csv`:** a header-only template with the §6 P6.3 columns,
+    `milestone,prompt_id,grammar,consistency,sense,rater,notes`. The header
+    is pinned by `tests/test_samples.cpp` (D6: format stays stable).
+  - **`eval/RUBRIC.md`:**
+    - anchored 0–5 scales for grammar, consistency and sense;
+    - scoring rules and illustrative examples (written for the rubric, not
+      model output);
+    - a milestone naming convention (`<version>-<preset>-step<step>`);
+    - a pilot procedure.
+- **Which completion is scored:** the temperature-0.8 one. The CSV has no
+  greedy/sampled column, and the specified format was kept rather than
+  extended. Greedy completions of small models tend to loop, which would
+  mostly measure the decoding rule; they remain in the samples files for
+  build comparisons.
+- **Pilot criterion:** the DoD says "agree within ±1". It is made concrete
+  as: at least 27 of the 30 score pairs (10 prompts × 3 dimensions) differ
+  by ≤ 1, and none by more than 2. On failure, the raters refine the
+  anchors and re-pilot on a different samples file.
+- **DoD status: pending.** The pilot needs two human raters and samples from
+  a trained checkpoint (the P5.2 `small` run, still to be executed). No
+  scores have been entered, and none were produced by the assistant.
