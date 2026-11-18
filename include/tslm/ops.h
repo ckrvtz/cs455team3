@@ -11,7 +11,7 @@
 //   - output buffers must not overlap input buffers;
 //   - layouts are row-major (§6.2). Sizes that can exceed 2^31 are size_t.
 //
-// This file grows task by task. Declared so far: P2.1-P2.4 forward ops, P3.1-P3.2 backward ops.
+// This file grows task by task. Declared so far: P2.1-P2.4 forward ops, P3.1-P3.3 backward ops.
 #pragma once
 
 #include <cstddef>
@@ -71,6 +71,13 @@ void matmul_backward(real_t* dinp, real_t* dW, real_t* dbias, const real_t* dout
 //   att[b,h,t,t2] = softmax_{t2<=t}( Q_h(t) . K_h(t2) / sqrt(hs) ), and exactly 0 for t2 > t
 //   out[b,t,h*hs+i] = sum_{t2<=t} att[b,h,t,t2] * V_h(t2)[i]
 void attention_forward(real_t* out, real_t* att, const real_t* qkv, int B, int T, int C, int NH);
+// Backward through attention_forward, ACCUMULATING into dqkv [B,T,3C] (same layout as qkv).
+// att is the forward's saved post-softmax att. scratch: B*NH*T*T reals of workspace,
+// contents undefined on return (serial keeps datt/dpre there; CUDA batched-GEMM uses it too).
+//   datt = dY V^T;  dV += att^T dY;  dpre = att * (datt - rowsum(att * datt))
+//   dQ += dpre K / sqrt(hs);  dK += dpre^T Q / sqrt(hs)   (causal entries only)
+void attention_backward(real_t* dqkv, real_t* scratch, const real_t* dout, const real_t* qkv, const real_t* att, int B,
+                        int T, int C, int NH);
 
 // Softmax + cross entropy over N rows of V logits.
 //   probs[n,v] = exp(logits[n,v] - m_n) / sum_v' exp(logits[n,v'] - m_n),  m_n = max_v logits[n,v]

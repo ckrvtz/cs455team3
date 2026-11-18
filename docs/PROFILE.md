@@ -51,6 +51,19 @@ copies (the op cannot allocate), no threads.
 Not done: no fusing of the stages, no tiling over T (T ≤ 256, so each head's
 rows fit in cache), no threads.
 
+## attention_backward (`src/ops/attention_cpu.cpp`), P3.3
+
+Same structure and caveat as forward: **causal lower triangle only**, in
+three explicit stages per (b, h):
+1. `datt = dY·Vᵀ` and `dV += attᵀ·dY`;
+2. softmax backward in place;
+3. `dQ += dpre·K`, `dK += dpreᵀ·Q`.
+
+The `scratch` argument (B·NH·T·T) holds `datt`/`dpre`; only its lower
+triangle is touched. The `datt` dot products use the lane technique; `dV`,
+`dQ` and `dK` are multiply-adds over the head dimension (vectorized, fixed
+order). Not done: no recomputation-free fusing, no tiling over T, no threads.
+
 ## softmax_xent_forward / sum_reduce (`src/ops/softmax_xent_cpu.cpp`), P2.4
 
 No special optimization. One pass for the row max, one for exp plus the
