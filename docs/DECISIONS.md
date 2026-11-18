@@ -356,3 +356,19 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   tolerances, not bit for bit. Also, gradient checks of elementwise ops
   evaluate only the perturbed element's term of the scalar loss; that is
   mathematically identical and avoids rounding noise from unrelated terms.
+
+## 2026-11-18: README.md written early and kept current every task
+
+- **Change:** `README.md` exists now (after P3.1) rather than first appearing
+  in P7.3. CLAUDE.md §2 and §11 now require every task that changes anything
+  a user runs or configures to update the README in the same change. The
+  README may only list commands that have actually been run, its Status line
+  tracks phase milestones, and the §2 final report says what changed in it.
+- **Reason:** teammates need working build, data and tool instructions
+  during development, not only at hand-off. Updating the README task by task
+  keeps it accurate, rather than reconstructing it from memory at the end.
+- **Impact:** ROADMAP P7.3 changes from writing the README to completing
+  it: adding exact reproduction commands for a smoke run, a `small` run and
+  a benchmark, the machine spec table, and the clean-clone timing in its DoD.
+  The ROADMAP edit itself is proposed separately. No effect on code, formats
+  or the CUDA/MPI builds.

@@ -26,7 +26,8 @@ Read this file fully at the start of every session. Then read the relevant secti
 - **Tests first for numerics.** For any op or model change, write or update the test (FD check, golden compare, or hand-computed case) in the same change as the implementation.
 - **Do not edit golden files** (`tests/golden/*`) or contract headers (`ops.h`, `backend.h`, `comm.h`, `layout.h`, checkpoint/log formats) to make a test pass. If a contract must change, stop, explain the CUDA/MPI impact, propose the change, and wait for approval. Approved changes get an entry in `docs/DECISIONS.md` (date, change, reason, impact on other builds).
 - **Keep diffs small and reviewable.** Prefer new files over giant rewrites. Do not reformat files you did not need to touch.
-- **Final report format** (end of every task, short): what was implemented (files), test commands run and results, deviations or decisions, open issues, suggested next task. No long recaps.
+- **Keep `README.md` current.** Any task that adds or changes something a user runs or configures (an app, a command-line option, a `make` target or variable, a script, a config key or preset, a required tool or dependency, or a user-visible output file) updates `README.md` in the same change. The README describes only what exists and has been run: every command in it must have been executed successfully in this task or an earlier one. Update the **Status** line when a phase milestone lands. Keep it concise; details belong in file header comments, `ROADMAP.md`, or `docs/`.
+- **Final report format** (end of every task, short): what was implemented (files), test commands run and results, README changes (or "none needed"), deviations or decisions, open issues, suggested next task. No long recaps.
 
 ---
 
@@ -138,6 +139,7 @@ These exist so CUDA and MPI versions can be added without rewriting the model. S
 - [ ] No Python, new dependency, or contract change introduced without approval
 - [ ] File header comments describe shapes, semantics, and math for any new op
 - [ ] `THIRD_PARTY.md` / `docs/DECISIONS.md` updated if applicable
+- [ ] `README.md` updated for any user-facing change (or confirmed unaffected), with every new or changed command actually run
 - [ ] Final report written in the §2 format
 
 ---
