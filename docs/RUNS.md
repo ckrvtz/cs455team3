@@ -8,8 +8,8 @@ unless it says so.
 
 **Status:** completed on a teammate machine (2026-11-18, results below).
 Final val loss 2.6455 (ppl 14.1). Plateau criterion: 2 of 3 met; criterion
-2 missed by 0.006. The verdict is pending team review. The P6.1/P6.3 checks
-need the run's `ckpt_latest.bin`.
+2 missed (see below). **Plateau accepted by the team** (`docs/DECISIONS.md`,
+"P5.2 verdict"); P5.2 is done.
 
 ### What it is
 
@@ -170,7 +170,7 @@ file.
   same 20 batches) underestimates the broader validation loss of this model
   by about 0.12. It remains comparable across runs and builds, which is
   its purpose.
-- **Status:** the P5.2 plateau verdict remains with the team.
+- **Status:** plateau accepted by the team on this evidence (`docs/DECISIONS.md`, "P5.2 verdict").
 
 ### Generation and prompt samples from the final checkpoint (P6.1, P6.2)
 

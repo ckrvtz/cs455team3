@@ -14,12 +14,14 @@ are in [`CLAUDE.md`](CLAUDE.md).
     golden files;
   - AdamW;
   - training with validation and checkpoint/resume;
-  - generation, prompt evaluation, benchmarks and profiling.
-- **Pending:**
-  - the first full `small` run and its curves (P5.2, recipe 2 below);
-  - the scoring pilot (P6.3);
+  - generation, prompt evaluation, benchmarks and profiling;
   - the CUDA hand-off notes (P7.4) and build stubs (P7.5);
+  - the first full `small` run (P5.2): val loss 2.6455 (ppl 14.1) after
+    2,400 steps, plateau accepted (`docs/RUNS.md`).
+- **Pending:**
+  - the two-rater scoring pilot (P6.3);
   - the Serial Complete review (P5.3).
+- **Next:** the CUDA build (`ROADMAP_CUDA.md`).
 
 ## Quick start (clean clone to a trained smoke model)
 
@@ -78,8 +80,9 @@ bin/eval --ckpt runs/small_p52/ckpt_latest.bin --vocab_map data/p52/vocab_map.tx
   [`docs/RUNS.md`](docs/RUNS.md).
 - **How far it was verified:** in the clean-clone check (below), training
   ran to its first checkpoint (step 250, 1006 s) and was stopped, and
-  resuming continued to step 260. The full 2,400 steps have not been run
-  here yet (P5.2).
+  resuming continued to step 260. The full 2,400-step run was done on a
+  teammate's machine (P5.2); its log, curves and samples are in
+  `docs/runs/small_p52/`.
 
 ### 3. Benchmarks (about 12 min)
 

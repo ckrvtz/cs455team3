@@ -1375,3 +1375,29 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   (11 KB, byte-identical on rerun). The pilot itself needs two human raters.
 - **Checkpoint:** `runs/small_p52/ckpt_latest.bin` (20.5 MB) stays
   gitignored.
+
+## 2026-11-18: P5.2 verdict: plateau accepted (team decision)
+
+- **Decision:** the team accepts the P5.2 `small` run as a defensible loss
+  plateau. P5.2 is done.
+- **Basis** (all recorded in `docs/RUNS.md` and the two preceding entries):
+  - The final val loss is 2.6455 (ppl 14.1), inside the 2–3 range ROADMAP
+    §10 expects for truncated serial runs. Val decreased at every one of the
+    24 evaluations.
+  - Plateau criteria 1 (val drop < 0.05 over the last 500 steps: 0.0479)
+    and 3 (no NaN, no val increase > 0.02) were met.
+  - Criterion 2 (train/val gap within ±0.1) was not met: +0.106 as
+    originally defined, and +0.184 with the pre-specified supplementary
+    measurement on 20 fixed training batches. On 100 batches of each file
+    the gap is +0.015. The miss comes from the fixed 20-batch validation
+    slice being about 0.12 easier than the broader validation set; it is not
+    a train/val difference in the model. A longer run would not address it.
+  - The misses stay on the record; they are not reinterpreted as passes.
+- **Follow-up for future plateau checks:** define the gap on `evaluate()` of
+  equal-sized fixed train and val sets of at least 100 batches each (e.g.
+  `bin/eval_loss --batches 100`). Do not use the mean of logged single-step
+  losses against the 20-batch validation slice.
+- **Status of related tasks:**
+  - P6.1 is done (see the previous entry).
+  - The P6.3 two-rater pilot is still pending (`docs/runs/small_p52/samples_2400.txt`).
+  - P5.3 (Serial Complete review) can proceed once the pilot is recorded.
