@@ -1,2 +1,5 @@
 # dev_only tooling (offline golden-file generation). Not part of the build or tests.
 tokenizers==0.21.1
+# Golden forward/backward references (gen_golden.py). The PyPI Linux wheel also
+# pulls ~2.5 GB of CUDA runtime packages; only the CPU is used.
+torch==2.5.1

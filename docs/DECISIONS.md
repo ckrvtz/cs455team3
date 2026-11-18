@@ -285,3 +285,38 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   weights → N(0, 0.02)). Tensor *i* uses `Rng(seed, i)`, as §4.6 requires.
 - **Measured:** fresh `base` model on `data/val.bin` (seed 1337, 2×4×256
   tokens): initial loss **9.2641**, versus ln(10000) = 9.2103 (DoD ±0.15).
+
+## 2026-11-18: Golden data format and forward golden cases (P2.6)
+
+- **Change:**
+  - **TSGD format:** golden tensors use a new named-tensor container
+    (`include/tslm/tensor_file.h`): little-endian; `f32`/`f64`/`i32`/`i64`.
+  - **`dump_init`:** the app writes the config, the seed, the
+    `model_init_weights` params as f32 (optionally × `--scale`), and a batch
+    drawn from `Rng(seed, 900000)`. That stream is kept apart from the init
+    streams (tensor index) and the data streams (100 + epoch).
+  - **`gen_golden.py`:** `dev_only/gen_golden.py` re-implements the model in
+    float64 PyTorch 2.5.1 and writes the loss, per-position losses and
+    logits.
+  - **Committed cases:** `tiny` (§10 config, tied, standard init) and
+    `tiny_untied_x10` (untied, weights × 10). Recipe in
+    `tests/golden/README.md`.
+- **Reason:** ROADMAP §10. At standard init the logits are nearly uniform, so
+  loss is a weak signal. Deliberately dropping the attention 1/√hs scale
+  changed the `tiny` loss by only 9.2e-6 relative (inside the §10 1e-5 loss
+  tolerance) but moved its logits by 7.6e-4 relative L2, and the ×10 case
+  by 1.2e-2 in loss. So `test_golden` also checks per-position losses and
+  logits rel-L2 (< 1e-5), in addition to the §10 loss criterion.
+- **Measured (`make test`):**
+
+  | Build | `tiny` loss rel err | `tiny_untied_x10` loss rel err | Logits rel-L2 (worst) |
+  |---|---|---|---|
+  | float | 8.4e-9 | 3.1e-8 | 4.6e-7 |
+  | double | 0 | 3.4e-16 | 9.2e-16 |
+
+- **Tooling note:** `download.pytorch.org` (CPU wheel) is not allowed in the
+  cloud environment, so the PyPI wheel was installed together with its CUDA
+  runtime packages (~2.5 GB). PyTorch remains offline/dev-only: `make`,
+  tests and `make dist` never use it.
+- **Impact:** P3.7 extends `gen_golden.py` with gradients and AdamW steps on
+  the same cases. CUDA/MPI builds compare against the same files.
