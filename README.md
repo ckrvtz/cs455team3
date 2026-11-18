@@ -9,8 +9,8 @@ are in [`CLAUDE.md`](CLAUDE.md).
 **Status (Phase A, serial):** the data pipeline (download, tokenizer, dataset
 preparation, loader), the full forward and backward passes, and the
 full-model gradient check, the AdamW optimizer with its LR schedule, and the
-training loop (`train_serial`, training loss only) are done. Validation,
-checkpoints, generation and benchmarking are not built yet.
+training loop (`train_serial`) with checkpoint/resume are done. Validation,
+generation and benchmarking are not built yet.
 
 ## Requirements
 
@@ -98,6 +98,8 @@ plus `--key value` overrides. Unknown keys are errors.
 ```bash
 bin/train_serial --config configs/smoke.cfg               # 200 steps of the tiny smoke model
 bin/train_serial --config configs/smoke.cfg --max_steps 50 --run_name try1
+bin/train_serial --config configs/smoke.cfg --ckpt_every 100                                  # also checkpoint at step 100
+bin/train_serial --config configs/smoke.cfg --ckpt_every 100 --resume runs/smoke/ckpt_100.bin # continue from step 100
 ```
 
 - **Outputs** go to `runs/<run_name>/` (`--out_dir` changes `runs`):
@@ -106,11 +108,17 @@ bin/train_serial --config configs/smoke.cfg --max_steps 50 --run_name try1
   - `log.csv`: one row at step 1, every `log_every` steps and at the end:
     loss, lr, grad norm, tokens/s, and per-step milliseconds for data,
     forward, backward, comm and optimizer.
+  - `ckpt_<step>.bin` and `ckpt_latest.bin`: weights plus optimizer and data
+    position, every `ckpt_every` steps (0 = none) and always at the last step.
 
   Rerunning a run name overwrites its files, with a warning.
+- **Resume:** `--resume <checkpoint>` continues from the step after it, with
+  the same seed, model, `batch_size` and `seq_len` (checked). In the same
+  run directory, `log.csv` rows after the checkpoint are replaced. A resumed
+  run gives the same results, bit for bit, as one that was never stopped.
 - **Data:** training reads `data/train.bin` (`--train_data` to change it).
-- **Not written yet:** the `val_loss`/`val_ppl` columns stay empty and no
-  checkpoints are written. The program says so when it starts.
+- **Not written yet:** the `val_loss`/`val_ppl` columns stay empty. The
+  program says so when it starts.
 - **Timing:** the first run after a reboot can be much slower. The 927 MB
   token file is read at random positions, and those reads are slow until the
   file is in the OS page cache; the extra time shows up in `data_ms`.

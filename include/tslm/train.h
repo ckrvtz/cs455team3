@@ -20,16 +20,27 @@
 // per-step means over the steps since the previous row. tokens_seen and
 // tok_per_s count GLOBAL tokens (B * T * world_size per step).
 //
-// Outputs (rank 0 only) in <out_dir>/<run_name>/ (created if missing;
-// existing files are overwritten with a warning):
+// Outputs (rank 0 only) in <out_dir>/<run_name>/ (created if missing; a
+// fresh run overwrites existing files with a warning):
 //   manifest.txt  '#'-comment metadata (date, git hash, build, compiler and
 //                 flags, device, CPU, cores, RAM, world size, parameter
 //                 counts, data files), then config_to_text(cfg). The comment
 //                 lines are ignored by the config parser, so
 //                 `--config <run>/manifest.txt` reproduces the run's config.
 //   log.csv       logging.h format.
-// Not yet produced: validation columns (P4.4), checkpoints (P4.3) and
-// samples (Phase 6). train_run states this in its startup log.
+//   ckpt_<step>.bin and ckpt_latest.bin (checkpoint.h) every ckpt_every
+//                 steps (0 = none) and always at max_steps; written after the
+//                 step's timing, so step_ms excludes checkpoint I/O.
+// Not yet produced: validation columns (P4.4) and samples (Phase 6).
+//
+// Resume (cfg.train.resume = checkpoint path): params, m, v, the step and the
+// loader position come from the checkpoint; its model config, seed, T and
+// global batch must equal the run's (checked). The run continues at step + 1
+// up to max_steps; other settings (lr, max_steps, log_every, ...) come from
+// cfg. log.csv in the run directory keeps its rows up to the checkpoint step
+// and the later ones are dropped (they are rerun); manifest.txt is rewritten
+// with the resolved config, which includes the resume key. A resumed serial
+// run is bit-identical to an uninterrupted one (tests/test_checkpoint.cpp).
 #pragma once
 
 #include <cstdint>
@@ -41,9 +52,10 @@
 namespace tslm {
 
 struct TrainSummary {
-    int steps = 0;
+    int start_step = 1;  // first step run (> 1 when resumed)
+    int steps = 0;       // last step run
     uint64_t tokens_seen = 0;
-    double first_loss = 0.0;  // train loss at step 1
+    double first_loss = 0.0;  // train loss at start_step
     double final_loss = 0.0;  // train loss at the last step
     double wall_s = 0.0;      // total wall time of the step loop
 };

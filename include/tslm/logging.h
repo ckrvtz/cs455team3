@@ -59,6 +59,11 @@ public:
     // Create or truncate `path` and write the header. Returns false with *err
     // on failure.
     bool open(const std::string& path, std::string* err);
+    // Resume an existing log: keep the header and every row with
+    // step <= keep_through_step, drop later rows (they belong to steps that
+    // will be rerun), then append. If `path` does not exist, behaves like
+    // open(). Fails if the existing header is not LOG_CSV_HEADER.
+    bool open_resume(const std::string& path, int keep_through_step, std::string* err);
     // Append one row and flush; CHECKs the write.
     void write(const LogRow& r);
     void close();

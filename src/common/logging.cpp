@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdarg>
+#include <cstdlib>
 #include <cstring>
 
 #include "tslm/common.h"
@@ -62,6 +63,43 @@ bool CsvLog::open(const std::string& path, std::string* err) {
     }
     path_ = path;
     if (std::fprintf(f_, "%s\n", LOG_CSV_HEADER) < 0 || std::fflush(f_) != 0) {
+        if (err) *err = "cannot write " + path;
+        close();
+        return false;
+    }
+    return true;
+}
+
+bool CsvLog::open_resume(const std::string& path, int keep_through_step, std::string* err) {
+    close();
+    std::FILE* in = std::fopen(path.c_str(), "r");
+    if (!in) return open(path, err);
+    std::string text;
+    char b[4096];
+    size_t n;
+    while ((n = std::fread(b, 1, sizeof(b), in)) > 0) text.append(b, n);
+    std::fclose(in);
+    std::string kept;
+    size_t pos = 0;
+    bool first = true;
+    while (pos < text.size()) {
+        size_t nl = text.find('\n', pos);
+        if (nl == std::string::npos) nl = text.size();
+        const std::string line = text.substr(pos, nl - pos);
+        pos = nl + 1;
+        if (first) {
+            if (line != LOG_CSV_HEADER) {
+                if (err) *err = path + ": unexpected header; not a tslm log.csv";
+                return false;
+            }
+            first = false;
+            continue;
+        }
+        if (line.empty()) continue;
+        if (std::atoi(line.c_str()) <= keep_through_step) kept += line + "\n";
+    }
+    if (!open(path, err)) return false;
+    if (!kept.empty() && (std::fputs(kept.c_str(), f_) < 0 || std::fflush(f_) != 0)) {
         if (err) *err = "cannot write " + path;
         close();
         return false;

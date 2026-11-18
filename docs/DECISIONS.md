@@ -660,3 +660,66 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
     columns.
 - **Impact:** CUDA/MPI builds use the same loop file; only the
   backend/comm shims differ.
+
+## 2026-11-18: Checkpoint format and resume (P4.3)
+
+- **Format** (`include/tslm/checkpoint.h`, version 1): a 128-byte
+  little-endian header, then `params`, `m`, `v` as flat padded host buffers
+  (§9).
+  - **Header contents:** magic `TSCK`, version, ModelConfig, `step`,
+    `tokens_seen`, loader `{epoch, step}`, `num_params`,
+    `num_params_padded`.
+  - **Additions beyond the §9 list:**
+    - `real_bytes`: payload element size, 4 or 8;
+    - `seed`, `global_batch` and `seq_len`: the loader position means
+      nothing without them;
+    - an FNV-1a 64 checksum of the payload;
+    - 16 reserved zero bytes.
+- **Why `real_bytes`:** the production builds are all float32, but the
+  `REAL=double` build must be able to save and resume its own runs exactly.
+  - A file with the other element size is converted on load: exact for
+    float → double, rounded for double → float. A log line says so.
+  - Both directions are tested: the float build loads a double file, and
+    the double build loads a float file.
+- **Why seed / T / global batch:** resuming with any of them changed would
+  silently continue on a different data order, so a mismatch aborts.
+  Model-config and parameter-count mismatches abort too.
+- **Writing:**
+  - The payload streams through a fixed 64 KB stack buffer
+    (`copy_d2h`/`copy_h2d`), so no allocation happens in the loop and the
+    code works on device pointers.
+  - Each file is written to `<path>.tmp` and renamed.
+  - `ckpt_<step>.bin` and `ckpt_latest.bin` are written as two full saves of
+    identical bytes.
+  - Saving happens after the step's timing (`step_ms` excludes I/O), rank 0
+    only, followed by `comm_barrier`.
+  - Cadence: every `ckpt_every` steps and always at `max_steps`
+    (`ckpt_every=0`: only at the end).
+- **Resume:** a new config key `resume` (checkpoint path; empty = fresh run).
+  - It is a config key rather than an app-only flag, so a resumed run's
+    manifest records it and reproduces the run.
+  - Everything except params, m, v, step, tokens and loader position comes
+    from the run's config. This lets `max_steps` be extended; a changed
+    schedule is the user's choice.
+  - In the same run directory, `log.csv` keeps rows up to the checkpoint
+    step, and later rows (to be rerun) are dropped.
+  - The AdamW step count is the checkpoint step. Training uses no randomness
+    besides the loader permutation, which is a pure function of
+    (seed, epoch).
+- **Measured** (release float):
+  - `tests/test_checkpoint.cpp`: resuming from step 10 of a 20-step run
+    reproduces `ckpt_20.bin` byte for byte, both in a new directory and in
+    place, crossing an epoch boundary at step 15. `log.csv` loss/lr/grad_norm
+    are identical.
+  - `configs/smoke.cfg` on real data: resuming from `ckpt_100.bin` gave a
+    `ckpt_200.bin` byte-identical (`cmp`) to an uninterrupted run. The smoke
+    checkpoint is 4,005,632 bytes; save time 13–18 ms for two files.
+- **Mutation evidence:** the tests failed on each of five planted bugs:
+  - loader state not restored;
+  - AdamW step count off by one after resume;
+  - `v` not saved;
+  - checksum not verified;
+  - old `log.csv` rows not dropped.
+- **Impact:** all four builds read and write this format. Phase C ranks each
+  load the same file (no broadcast needed); Phase B/D stream through the
+  same `copy_*` calls.

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "tslm/backend.h"
+#include "tslm/checkpoint.h"
 #include "tslm/comm.h"
 #include "tslm/common.h"
 #include "tslm/dataset.h"
@@ -54,7 +55,26 @@ TrainSummary train_run(const Config& cfg) {
           cfg.model.vocab_size);
 
     Model* model = model_create(cfg.model, B, T);
-    model_init_weights(model, tc.seed);
+    const uint32_t global_batch = static_cast<uint32_t>(B * world);
+    int start_step = 1;
+    uint64_t tokens_at_start = 0;
+    if (tc.resume.empty()) {
+        model_init_weights(model, tc.seed);
+    } else {
+        // Every rank reads the same file, so params/m/v agree without a broadcast.
+        CheckpointInfo ck;
+        CHECK(checkpoint_load(tc.resume, model, &ck, &err), "%s", err.c_str());
+        CHECK(ck.seed == tc.seed && ck.seq_len == static_cast<uint32_t>(T) && ck.global_batch == global_batch,
+              "%s was written with seed %llu, T=%u, global batch %u; this run has seed %llu, T=%d, global batch "
+              "%u (the data position would not mean the same thing)",
+              tc.resume.c_str(), static_cast<unsigned long long>(ck.seed), ck.seq_len, ck.global_batch,
+              static_cast<unsigned long long>(tc.seed), T, global_batch);
+        CHECK(ck.step < static_cast<uint64_t>(tc.max_steps), "%s is at step %llu; max_steps=%d leaves nothing to run",
+              tc.resume.c_str(), static_cast<unsigned long long>(ck.step), tc.max_steps);
+        loader.set_state(ck.loader);
+        start_step = static_cast<int>(ck.step) + 1;
+        tokens_at_start = ck.tokens_seen;
+    }
     // Every rank starts from rank 0's weights (no-op in serial; §4.3).
     comm_broadcast(model->params, model->params_layout.num_params_padded, 0);
 
@@ -69,16 +89,21 @@ TrainSummary train_run(const Config& cfg) {
     CsvLog csv;
     if (lead) {
         make_dirs(dir);
-        if (file_exists(dir + "/log.csv")) log_warn("overwriting the existing run in %s", dir.c_str());
+        if (tc.resume.empty()) {
+            if (file_exists(dir + "/log.csv")) log_warn("overwriting the existing run in %s", dir.c_str());
+            CHECK(csv.open(dir + "/log.csv", &err), "%s", err.c_str());
+        } else {
+            CHECK(csv.open_resume(dir + "/log.csv", start_step - 1, &err), "%s", err.c_str());
+            log_info("resumed from %s at step %d (log.csv rows after it dropped)", tc.resume.c_str(),
+                     start_step - 1);
+        }
         write_text_file(dir + "/manifest.txt",
                         manifest_text(cfg, model, loader.num_tokens(), loader.steps_per_epoch(), world));
-        CHECK(csv.open(dir + "/log.csv", &err), "%s", err.c_str());
         log_info("run %s: %s", dir.c_str(), model_summary(model).c_str());
         log_info("data %s: %llu tokens, %llu steps/epoch at global batch %d x T=%d; %d steps", tc.train_data.c_str(),
                  static_cast<unsigned long long>(loader.num_tokens()),
                  static_cast<unsigned long long>(loader.steps_per_epoch()), B * world, T, tc.max_steps);
-        log_info("note: validation (P4.4) and checkpoints (P4.3) are not implemented yet: val_loss/val_ppl stay "
-                 "empty and no checkpoint files are written");
+        log_info("note: validation (P4.4) is not implemented yet: val_loss/val_ppl stay empty");
     }
 
     const uint64_t tokens_per_step = uint64_t(ntok) * uint64_t(world);
@@ -88,7 +113,8 @@ TrainSummary train_run(const Config& cfg) {
     int interval_steps = 0;
     const double loop_t0 = now_seconds();
 
-    for (int step = 1; step <= tc.max_steps; ++step) {
+    sum.start_step = start_step;
+    for (int step = start_step; step <= tc.max_steps; ++step) {
         const double t0 = now_seconds();
 
         timer.begin(Phase::Data);
@@ -127,8 +153,8 @@ TrainSummary train_run(const Config& cfg) {
         interval_ms += step_ms;
         ++interval_steps;
         sum.steps = step;
-        sum.tokens_seen = uint64_t(step) * tokens_per_step;
-        if (step == 1) sum.first_loss = loss;
+        sum.tokens_seen = tokens_at_start + uint64_t(step - start_step + 1) * tokens_per_step;
+        if (step == start_step) sum.first_loss = loss;
         sum.final_loss = loss;
 
         if (step == 1 || step % tc.log_every == 0 || step == tc.max_steps) {
@@ -154,6 +180,27 @@ TrainSummary train_run(const Config& cfg) {
             timer.reset();
             interval_ms = 0.0;
             interval_steps = 0;
+        }
+
+        // Checkpoints are written after the step's timing, so step_ms excludes I/O.
+        if ((tc.ckpt_every > 0 && step % tc.ckpt_every == 0) || step == tc.max_steps) {
+            if (lead) {
+                CheckpointInfo ck;
+                ck.step = static_cast<uint64_t>(step);
+                ck.tokens_seen = sum.tokens_seen;
+                ck.loader = loader.state();
+                ck.seed = tc.seed;
+                ck.global_batch = global_batch;
+                ck.seq_len = static_cast<uint32_t>(T);
+                const double c0 = now_seconds();
+                char name[64];
+                std::snprintf(name, sizeof(name), "/ckpt_%d.bin", step);
+                checkpoint_save(dir + name, model, ck);
+                checkpoint_save(dir + "/ckpt_latest.bin", model, ck);
+                log_info("checkpoint %s%s (+ ckpt_latest.bin), %.0f ms", dir.c_str(), name,
+                         (now_seconds() - c0) * 1e3);
+            }
+            comm_barrier();  // no rank runs ahead of a checkpoint being written
         }
     }
     sum.wall_s = now_seconds() - loop_t0;
