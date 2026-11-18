@@ -11,7 +11,7 @@
 //   - output buffers must not overlap input buffers;
 //   - layouts are row-major (§6.2). Sizes that can exceed 2^31 are size_t.
 //
-// This file grows task by task. Declared so far: P2.1 forward ops.
+// This file grows task by task. Declared so far: P2.1 and P2.2 forward ops.
 #pragma once
 
 #include <cstddef>
@@ -42,6 +42,11 @@ void gelu_forward(real_t* out, const real_t* inp, size_t n);
 
 // Residual add, elementwise over n values: out = a + b.
 void residual_forward(real_t* out, const real_t* a, const real_t* b, size_t n);
+
+// Linear: out[N,OC] = inp[N,C] * W[OC,C]^T (+ bias[OC], nullable)
+//   out[n,o] = sum_c inp[n,c] * W[o,c] + (bias ? bias[o] : 0)
+void matmul_forward(real_t* out, const real_t* inp, const real_t* W, const real_t* bias, int N, int C,
+                    int OC);
 
 }  // namespace ops
 }  // namespace tslm
