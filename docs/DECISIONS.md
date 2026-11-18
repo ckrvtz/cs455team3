@@ -493,3 +493,35 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **Impact:** test methodology only; no code, contract or format change.
   P3.7's per-tensor comparison against PyTorch autograd still covers
   `qkv_b` as a whole.
+
+## 2026-11-18: Gradcheck configuration: h = 3e-4 on init weights ×3 (P3.6), approved
+
+- **Change:** the full-model gradcheck runs on the §10 tiny model with init
+  weights **×3** and stencil step **h = 3e-4**. This amends the h = 1e-3 of
+  the stencil decision above. The **pass criterion is unchanged**: rel err
+  < 1e-6, floor 1e-8, every sampled entry, plus the key-bias check. The
+  ROADMAP §10 row was updated. Implemented in `run_gradcheck`
+  (`include/tslm/gradcheck.h`), the `gradcheck` app and
+  `tests/test_gradcheck.cpp`.
+- **Reason:** measured in the `REAL=double` build, 10 seeds per
+  configuration:
+  - **Standard init (×1) never passes, at any step size** (0/10 tied and
+    untied, at h = 1e-3 and 3e-4). Some gradients there are ~1e-7 (e.g.
+    layer-0 LayerNorm biases), below the 5-point stencil's rounding noise
+    (~1.5·u·|L|/h ≈ 6e-13 at h = 1e-3), so they cannot be confirmed to 1e-6.
+  - **h = 1e-3 also fails on strongly curved entries through truncation.**
+    E.g. seed 99, `h1.proj_b`: rel err 1.75e-4 / 2.19e-6 / 1.8e-8 at
+    h = 3e-3 / 1e-3 / 3e-4. That is the O(h⁴) scaling; the analytic value is
+    correct, as smaller h and the 2-point estimate both converge to it.
+  - **h = 3e-4 with ×3 passed 10/10 seeds tied and 10/10 untied**, worst rel
+    err 1.5e-7 / 2.2e-7. Default seed 1337: worst 3.1e-8 tied, key-bias
+    ratios ≤ 8e-17.
+  - At ×3, attention is non-uniform and gradients sit well above the noise
+    floor, while the same code is tested.
+- **Not lost:** standard-init gradients are still covered exactly by the
+  P3.7 PyTorch-autograd golden comparison (no FD noise).
+- **Mutation evidence:** gradcheck failed on each of four planted backward
+  bugs: a dropped LayerNorm term (52 tensors failing across the tied and
+  untied runs), a missing attention dQ scale (36), a wrong GELU derivative
+  factor (48), and the wrong LN-1 input in `model_backward` (30).
+- **Impact:** test configuration only; no code contracts or formats change.

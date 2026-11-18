@@ -7,8 +7,8 @@ and CUDA+MPI. The plan is in [`ROADMAP.md`](ROADMAP.md) and the working rules
 are in [`CLAUDE.md`](CLAUDE.md).
 
 **Status (Phase A, serial):** the data pipeline (download, tokenizer, dataset
-preparation, loader), the full forward pass and the first backward ops are
-done. The remaining backward ops, the optimizer, training, generation and
+preparation, loader), the full forward and backward passes, and the
+full-model gradient check are done. The optimizer, training, generation and
 benchmarking are not built yet, so there is no `train` command.
 
 ## Requirements
@@ -37,6 +37,21 @@ make clean               # remove build/, bin/, dist/
   object files.
 - **Not available yet:** `make BACKEND=cuda` and `make COMM=mpi` are later
   phases; they currently stop with a clear `#error`.
+
+### Gradient check
+
+```bash
+make REAL=double
+bin/release-double/gradcheck                       # tied tiny model; prints a per-tensor table, exit 0 on PASS
+bin/release-double/gradcheck --tie_embeddings 0    # untied head
+```
+
+This compares `model_backward` against finite differences on the ROADMAP
+§10 tiny model, about 0.2 s. Options: `--seed N`, `--scale S` (init weight
+multiplier, default 3), `--samples K` (default 20 per tensor), `--h H`
+(stencil step, default 3e-4), plus model/batch config keys. It runs only in
+the double-precision build; `bin/gradcheck` from a float build refuses with
+a message. `make test REAL=double` also runs it.
 
 ## Data
 
