@@ -11,7 +11,7 @@
 //   - output buffers must not overlap input buffers;
 //   - layouts are row-major (§6.2). Sizes that can exceed 2^31 are size_t.
 //
-// This file grows task by task. Declared so far: P2.1-P2.3 forward ops.
+// This file grows task by task. Declared so far: P2.1-P2.4 forward ops.
 #pragma once
 
 #include <cstddef>
@@ -54,6 +54,16 @@ void matmul_forward(real_t* out, const real_t* inp, const real_t* W, const real_
 //   att[b,h,t,t2] = softmax_{t2<=t}( Q_h(t) . K_h(t2) / sqrt(hs) ), and exactly 0 for t2 > t
 //   out[b,t,h*hs+i] = sum_{t2<=t} att[b,h,t,t2] * V_h(t2)[i]
 void attention_forward(real_t* out, real_t* att, const real_t* qkv, int B, int T, int C, int NH);
+
+// Softmax + cross entropy over N rows of V logits.
+//   probs[n,v] = exp(logits[n,v] - m_n) / sum_v' exp(logits[n,v'] - m_n),  m_n = max_v logits[n,v]
+//   losses[n]  = -log probs[n, targets[n]]   (targets[n] in [0, V), validated by the caller)
+// Per-position losses only; the host reduces them with sum_reduce.
+void softmax_xent_forward(real_t* probs, real_t* losses, const real_t* logits, const int32_t* targets, int N,
+                          int V);
+
+// Sum of n values accumulated in double, returned to the host (used for the mean loss).
+double sum_reduce(const real_t* x, size_t n);
 
 }  // namespace ops
 }  // namespace tslm

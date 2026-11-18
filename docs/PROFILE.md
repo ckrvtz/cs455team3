@@ -38,3 +38,13 @@ against a rigorous order-independent error bound.
 
 Not done: no fusing of the stages, no tiling over T (T ≤ 256, so each head's
 rows fit in cache), no threads.
+
+## softmax_xent_forward / sum_reduce (`src/ops/softmax_xent_cpu.cpp`), P2.4
+
+No special optimization. One pass for the row max, one for exp plus the
+double-precision sum, one to normalize. At V = 10,000 the `exp` calls and
+the double row sum run as scalar code: vectorizing them would need
+`-ffast-math` or a vector math library, which the serial baseline forbids.
+The op is memory/exp-bound and much cheaper than the head matmul that
+produces the logits. `sum_reduce` is a sequential double-precision sum
+(deterministic).
