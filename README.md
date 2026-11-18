@@ -6,13 +6,111 @@ from scratch in C++17. It is planned in four builds: serial, CUDA, serial+MPI
 and CUDA+MPI. The plan is in [`ROADMAP.md`](ROADMAP.md) and the working rules
 are in [`CLAUDE.md`](CLAUDE.md).
 
-**Status (Phase A, serial):** the data pipeline (download, tokenizer, dataset
-preparation, loader), the full forward and backward passes, and the
-full-model gradient check, the AdamW optimizer with its LR schedule, and the
-training loop (`train_serial`) with validation and checkpoint/resume are
-done (Phases 0–4); `make test` includes the overfit and smoke training tests.
-Generation (`generate`), prompt evaluation (`eval`) and benchmarking
-(`bench`) work.
+**Status (Phase A, serial):** the serial build is complete and tested.
+- **Done:**
+  - the data pipeline: download, our own BPE tokenizer, dataset preparation,
+    loader;
+  - forward and backward passes, verified by a gradient check and PyTorch
+    golden files;
+  - AdamW;
+  - training with validation and checkpoint/resume;
+  - generation, prompt evaluation, benchmarks and profiling.
+- **Pending:**
+  - the first full `small` run and its curves (P5.2, recipe 2 below);
+  - the scoring pilot (P6.3);
+  - the CUDA hand-off notes (P7.4) and build stubs (P7.5);
+  - the Serial Complete review (P5.3).
+
+## Quick start (clean clone to a trained smoke model)
+
+About 10 minutes on the reference machine below, most of it the 2 GB
+download and tokenization.
+
+```bash
+git clone https://github.com/ckrvtz/cs455team3.git
+cd cs455team3
+make
+make test
+scripts/download_data.sh
+bin/prepare_data
+bin/train_serial --config configs/smoke.cfg
+bin/generate --ckpt runs/smoke/ckpt_latest.bin --prompt "Once upon a time" --temperature 0.8 --top_k 50 --seed 7
+bin/eval --ckpt runs/smoke/ckpt_latest.bin
+```
+
+- **`make test`** runs all 30 test programs in about 20 s, including the
+  gradient check, the PyTorch golden comparisons, and the overfit and smoke
+  training tests.
+- **Training** writes `runs/smoke/` (`manifest.txt`, `log.csv`, checkpoints).
+  At step 200 the validation loss is about 5.7.
+- **The smoke model is tiny** (333k parameters), so its samples are word
+  salad. Readable stories need recipe 2.
+
+## Reproducing the results
+
+### 1. Smoke run (seconds)
+
+The quick start above. On the reference machine,
+`bin/train_serial --config configs/smoke.cfg` finishes in about 5 s with a
+warm page cache. It ends at train loss 6.1013 and val loss 5.6889
+(`docs/DECISIONS.md`).
+
+### 2. `small` run (P5.2: about 2.7 h serial)
+
+```bash
+mkdir -p data/p52
+bin/prepare_data --max_tokens 20000000 --out_dir data/p52
+bin/train_serial --config configs/small.cfg --train_data data/p52/train.bin --val_data data/p52/val.bin --run_name small_p52
+bin/train_serial --config configs/small.cfg --train_data data/p52/train.bin --val_data data/p52/val.bin --run_name small_p52 --resume runs/small_p52/ckpt_latest.bin
+python3 dev_only/plot_log.py runs/small_p52/curves.svg runs/small_p52/log.csv
+bin/eval --ckpt runs/small_p52/ckpt_latest.bin --vocab_map data/p52/vocab_map.txt
+```
+
+- **What it is:** 20M training tokens and 2,400 steps (one epoch), with
+  validation every 100 steps and checkpoints every 250.
+- **Run it unattended** (`nohup`, `tmux`, or a batch job).
+- **If it stops:** the second `train_serial` command (with `--resume`)
+  continues from the last checkpoint, bit-identically.
+- **Afterwards:** `plot_log.py` draws the loss curves and `eval` writes the
+  prompt samples.
+- **Details:** the expected cost and the plateau criterion are in
+  [`docs/RUNS.md`](docs/RUNS.md).
+
+### 3. Benchmarks (about 12 min)
+
+```bash
+make clean && make
+scripts/bench.sh W-C
+scripts/bench.sh W-A
+```
+
+- **Output:** each command appends 3 rows to `bench/serial_<workload>.csv`.
+- **Reference results:** the committed CSVs, measured on the reference
+  machine:
+
+  | Workload | Median step time | Tokens/s |
+  |---|---|---|
+  | W-C (smoke) | ≈ 20.1 ms | 6.3k–6.4k |
+  | W-A (small, B=32) | ≈ 3.61 s | 2.25k–2.30k |
+- **Conditions:** run on an idle machine.
+
+### Reference machine
+
+All recorded timings come from this machine unless a record says otherwise.
+
+| | |
+|---|---|
+| CPU | Intel Xeon Processor @ 2.30GHz with AVX-512 (cloud container), 4 vCPU; the serial build uses 1 |
+| RAM | 16 GB |
+| OS | Ubuntu 24.04.5 LTS |
+| Compiler | g++ 13.3.0, flags `-std=c++17 -O3 -march=native` |
+| Make | GNU Make 4.3 |
+
+Earlier records (up to 2026-11-18 05:30 UTC) came from the same container on
+an "Intel Xeon @ 2.10GHz" host (`docs/DECISIONS.md`). `-march=native` makes
+objects CPU-specific. The Makefile rebuilds everything when the CPU or
+compiler changes, and results are bit-reproducible per build, not across
+CPUs.
 
 ## Requirements
 
@@ -211,13 +309,10 @@ Tests compare against small reference files committed in `tests/golden/`;
 see [`tests/golden/README.md`](tests/golden/README.md). They are regenerated
 offline only when a model definition legitimately changes:
 
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r dev_only/requirements.txt
-bin/dump_init --out tests/golden/tiny_init.bin ...            # full commands in tests/golden/README.md
-.venv/bin/python dev_only/gen_golden.py tests/golden/tiny_init.bin tests/golden/tiny_fwd.bin
-```
-
-The PyPI `torch` wheel for Linux also installs about 2.5 GB of CUDA libraries.
+The exact commands (a Python virtual environment with
+`dev_only/requirements.txt`, then `bin/dump_init` and
+`dev_only/gen_golden.py`) are in that file. The PyPI `torch` wheel for Linux
+also installs about 2.5 GB of CUDA libraries.
 
 ## Layout
 
@@ -226,7 +321,8 @@ include/tslm/   public headers (ops.h, model.h, layout.h, backend.h, comm.h, ...
 src/            library: common/ backend/ comm/ ops/ model/ optim/ data/ train/
 apps/           command-line tools (thin main()s)
 tests/          unit tests (test_*.cpp), golden data, and a 208 KB real-data fixture (tests/fixtures/)
-configs/        presets       scripts/  data download
-docs/           DECISIONS.md (design decision log), PROFILE.md (serial optimizations)
-dev_only/       offline Python for golden files; never built or shipped
+configs/        presets       scripts/  data download, bench.sh, profile.sh
+eval/           fixed prompts, scoring rubric and scores template       bench/  committed benchmark CSVs
+docs/           DECISIONS.md (decision log), PROFILE.md (optimizations + profile), RUNS.md (long runs), STATUS.md
+dev_only/       offline Python (golden files, fixture cutting, loss plots); never built or shipped
 ```
