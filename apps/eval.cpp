@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "tslm/backend.h"
 #include "tslm/build_config.h"
 #include "tslm/checkpoint.h"
 #include "tslm/common.h"
@@ -26,6 +27,7 @@
 using namespace tslm;
 
 int main(int argc, char** argv) {
+    dev_init(0);
     std::string ckpt, out, prompts_path = "eval/prompts.txt", vocab_map = "data/vocab_map.txt",
                            vocab_json = "data/vocab.json", merges_txt = "data/merges.txt";
     for (int i = 1; i < argc; i += 2) {

@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "tslm/backend.h"
 #include "tslm/checkpoint.h"
 #include "tslm/common.h"
 #include "tslm/generate.h"
@@ -49,6 +50,7 @@ double parse_double_or_die(const std::string& key, const std::string& v) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    dev_init(0);
     std::string ckpt, prompt, vocab_map = "data/vocab_map.txt", vocab_json = "data/vocab.json",
                               merges_txt = "data/merges.txt";
     GenerateOptions opt;

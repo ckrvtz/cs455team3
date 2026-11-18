@@ -35,6 +35,7 @@ using namespace tslm;
 static constexpr uint64_t GOLDEN_BATCH_STREAM = 900000;
 
 int main(int argc, char** argv) {
+    dev_init(0);
     Config cfg;
     std::string out, err;
     double scale = 1.0;

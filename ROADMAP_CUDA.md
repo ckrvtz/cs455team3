@@ -11,6 +11,14 @@ Sources: `project-proposal.pdf` (CUDA plan and timeline), `TinyStories.pdf`
 (model scale), `ROADMAP.md`, `docs/HANDOFF.md`, `docs/PROFILE.md`,
 `docs/DECISIONS.md`, and the committed bench CSVs.
 
+**Team decisions of 2026-11-18 are incorporated** (§3; `docs/DECISIONS.md`,
+"Phase B team decisions"):
+- target GPU Quadro M2000M with nvcc 12.9 (D-B1);
+- cuBLAS for the matrix products (D-B2);
+- `dev_init`/`dev_peak_bytes` added to `backend.h` (D-B8);
+- Phase B may start (D-B9);
+- one `.cu` file per op family (D-B11).
+
 ---
 
 ## 0. How to use this document (humans and LLMs)
@@ -20,13 +28,14 @@ Sources: `project-proposal.pdf` (CUDA plan and timeline), `TinyStories.pdf`
 - **Status labels:**
   - **(DECISION):** a default chosen here; it can be overridden with a
     `docs/DECISIONS.md` entry.
-  - **(NEEDS DECISION):** must be settled by the team before the task that
-    depends on it starts. §3 lists them, each with a recommendation.
+  - **(TEAM DECISION):** decided by the team; changing it needs the team
+    and a DECISIONS entry. §3 lists them.
 - **Contracts:** `include/tslm/ops.h`, `backend.h`, `comm.h`, `layout.h`,
   the checkpoint and `log.csv` formats, and the bench CSV columns.
   - They are frozen.
-  - The only contract additions this roadmap anticipates are in §4.4. Each
-    still needs explicit approval and a DECISIONS entry before it is made.
+  - The only contract addition is in §4.4 (`dev_init`, `dev_peak_bytes`,
+    approved and already made). Any other contract change needs approval
+    and a DECISIONS entry first.
 - **Definition of Done (DoD):** a task's acceptance criteria pass ON A GPU,
   with the real output shown. A CUDA task whose code was not compiled AND
   run on an NVIDIA GPU is not done, however plausible it looks (§11).
@@ -39,10 +48,12 @@ Sources: `project-proposal.pdf` (CUDA plan and timeline), `TinyStories.pdf`
 
 ### Goals
 
-1. **A CUDA build** (`make BACKEND=cuda` → `bin/train_cuda`, plus every
-   other app) that implements every `ops.h` function as bespoke CUDA
-   kernels, with the model, training, data, checkpoint and app code
-   unchanged.
+1. **A CUDA build** (`make BACKEND=cuda` → `bin/cuda-float/train_cuda`, plus
+   every other app) that implements every `ops.h` function in CUDA, with the
+   model, training, data, checkpoint and app code unchanged:
+   - the matrix products use cuBLAS (D-B2): `matmul_*` and the batched
+     products inside `attention_*`;
+   - every other kernel is written for this project.
 2. **Equivalence with serial** under the ROADMAP §10 cross-version protocol,
    and the whole existing test suite (30 test programs, 154 test cases)
    passing in the CUDA build, including:
@@ -74,9 +85,9 @@ Sources: `project-proposal.pdf` (CUDA plan and timeline), `TinyStories.pdf`
   - no CUDA graphs.
 - **Generation:** no KV cache; generation keeps re-running the window.
 - **Scope:** no multiple GPUs in one process (that is Phase D, via MPI).
-- **Dependencies:** no third-party GPU libraries (cuDNN, CUTLASS, Thrust,
-  CUB, FlashAttention, ...) in the model path. cuBLAS is governed by
-  decision D-B2.
+- **Dependencies:** no third-party GPU libraries other than cuBLAS (D-B2,
+  matrix products only): no cuDNN, CUTLASS, Thrust, CUB or FlashAttention.
+  Adding any library needs team approval and a THIRD_PARTY.md entry.
 - **No changes to the model, its hyperparameters, or the data pipeline.**
 
 ---
@@ -131,8 +142,48 @@ Not yet compatible with CUDA (B0 fixes these):
 - **The development container has no GPU and no CUDA toolkit**
   (`nvidia-smi`, `nvcc` absent). See §11.
 
-Open Phase A items: the P5.2 `small` run, the P6.1 grammatical check, the
-P6.3 scoring pilot, and the P5.3 Serial Complete review. See decision D-B9.
+Open Phase A items: the manual story evaluations (the P6.3 two-rater pilot
+on `docs/runs/small_p52/samples_2400.txt`), then the P5.3 Serial Complete
+review. P5.2 and P6.1 are done. Phase B may proceed (D-B9).
+
+### 2.1 Target GPU and toolkit (D-B1)
+
+| Item | Value | Source |
+|---|---|---|
+| GPU | NVIDIA Quadro M2000M (Maxwell GM107), compute capability 5.0 | team; NVIDIA specifications |
+| Driver | 580.178.04 (`nvidia-smi` reports CUDA 13.0, the newest runtime it supports) | team |
+| Toolkit / compiler | CUDA Toolkit with **nvcc 12.9**; build `-arch=sm_50` | team |
+| Cores / SMs | 640 CUDA cores, 5 SMs | NVIDIA specifications |
+| FP32 peak | ≈ 1.4 TFLOP/s | NVIDIA specifications (estimate from cores × boost clock × 2) |
+| FP64 | 1/32 of the FP32 rate (≈ 44 GFLOP/s) | NVIDIA specifications |
+| Memory | 4 GB GDDR5, ≈ 80 GB/s | NVIDIA specifications |
+| Shared memory | 48 KB per block | compute capability 5.0 limits |
+| Tensor cores | none (TF32 and FP16 tensor paths do not exist) | Maxwell architecture |
+
+B0.1 confirms every specification row on the machine
+(`cudaGetDeviceProperties`, `nvidia-smi`, `nvcc --version`) and records it.
+Consequences:
+
+1. **Toolkit pinned at 12.9.** CUDA 13.0 removed offline compilation for
+   compute capability < 7.5 (Maxwell, Pascal, Volta), per NVIDIA's CUDA 13.0
+   release notes. Do not upgrade the toolkit to 13.x for this GPU. nvcc 12.9
+   warns that sm_50 is deprecated; the Makefile passes
+   `-Wno-deprecated-gpu-targets`.
+2. **Memory:** `small` B=32 needs 1,268 MB and `base` B=32 needs 2,050 MB
+   (HANDOFF), plus the CUDA context and cuBLAS workspace. That fits in
+   4 GB.
+   - If the GPU also drives a display, less memory is free, and a kernel
+     run-time limit (display watchdog) may apply.
+   - Check `nvidia-smi` for other processes, and for the "Kernel exec
+     timeout" property, in B0.1.
+3. **Double build:** the `REAL=double` build (gradcheck) runs at the slow
+   FP64 rate. That is fine for the tiny gradcheck model; do not use the
+   double build for anything large.
+4. **Same-machine speedups:** the GPU sits in a laptop-class machine. If
+   that machine is the teammate's i7-6820HQ that ran P5.2 (≈ 3.95 s/step for
+   `small`, from that run's `log.csv`, not a benchmark), the serial
+   benchmarks are re-run there, so every speedup compares the same machine
+   (B6.4).
 
 ---
 
@@ -142,23 +193,23 @@ P6.3 scoring pilot, and the P5.3 Serial Complete review. See decision D-B9.
 
 | ID | Decision | Why |
 |---|---|---|
-| D-B3 | **Deterministic kernels:** no floating-point `atomicAdd` in any kernel; every reduction has a fixed order (fixed tree or fixed sequential order per output). Same binary + same GPU + same seed ⇒ bit-identical runs. | The existing determinism and resume-bit-exactness tests must pass unchanged in the CUDA build. Atomic float adds make the last bits run-dependent. |
+| D-B3 | **Deterministic kernels:** no floating-point `atomicAdd` in any of our kernels; every reduction has a fixed order (fixed tree or fixed sequential order per output). cuBLAS is used only with routines and settings that NVIDIA documents as bit-wise reproducible run to run (same toolkit, same GPU, single stream, no atomics-based routines). Same binary + same GPU + same seed ⇒ bit-identical runs. | The existing determinism and resume-bit-exactness tests must pass unchanged in the CUDA build. Atomic float adds make the last bits run-dependent. |
 | D-B4 | **FP32, no TF32, no fast math:** `nvcc` never gets `--use_fast_math`; no `__expf`/`__fdividef` style intrinsics unless approved; no tensor-core TF32 paths. | §10 tolerances assume FP32. CLAUDE.md forbids fast math for the serial build, and the same honesty applies here. |
-| D-B5 | **Attention = the proposal's batched-GEMM design:** QKᵀ as a batched GEMM into `att`, a causal-masked row softmax kernel, then att·V as a batched GEMM. Backward mirrors it. Full T×T tiles are allowed at first; upper-triangle tile skipping is an optimization (B6.3). | Proposal ("batched matrix multiplication for QKᵀ and PV with a causal-masked softmax"), and `ops.h` saves `att`. |
+| D-B5 | **Attention = the proposal's batched-GEMM design:** QKᵀ as a batched GEMM into `att`, a causal-masked row softmax kernel, then att·V as a batched GEMM, with the GEMMs on cuBLAS (D-B2). Backward mirrors it. cuBLAS computes full T×T tiles; a bespoke causal-tile GEMM is an optional optimization (B6.3). | Proposal ("batched matrix multiplication for QKᵀ and PV with a causal-masked softmax"), and `ops.h` saves `att`. |
 | D-B6 | **One CUDA stream** (the default stream), synchronous semantics at phase boundaries via `dev_sync()`. | Simplicity and determinism; overlap is a non-goal. |
 | D-B7 | **Tests run in every build:** the test suite is made backend-agnostic (B0.3), and the CUDA build adds equivalence tests against a reference copy of the serial kernels (B0.4). No test is skipped in the CUDA build without a DECISIONS entry. | ROADMAP §10: "later versions reuse the validation suite unchanged". |
-| D-B10 | **Memory:** the existing flat buffers and single activation arena are allocated once with `cudaMalloc` through `dev_malloc`. No allocation in the training loop, including no `cudaMalloc` inside ops. Kernel launches use no dynamic allocation. | CLAUDE.md §4.5; the arena sizes (≤ 2.1 GB for `base`) fit any GPU with ≥ 4 GB. |
+| D-B10 | **Memory:** the existing flat buffers and single activation arena are allocated once with `cudaMalloc` through `dev_malloc`. No allocation in the training loop, including no `cudaMalloc` inside ops. Kernel launches use no dynamic allocation. cuBLAS gets its workspace once, at handle creation. | CLAUDE.md §4.5; the arena sizes (≤ 2.1 GB for `base`) fit the 4 GB M2000M (§2.1). |
 | D-B12 | **Sanitizers:** `make BACKEND=cuda MODE=debug` builds with `-G -lineinfo`. A `make BACKEND=cuda sanitize` target runs the tests under `compute-sanitizer` (memcheck; racecheck and synccheck for kernels with shared memory). | The CUDA analogue of the serial ASan/UBSan build. |
 
-### Needs a team decision before the dependent task (NEEDS DECISION)
+### Decided by the team, 2026-11-18 (TEAM DECISION)
 
-| ID | Question | Recommendation | Blocks |
-|---|---|---|---|
-| D-B1 | **Which GPU machine(s) and CUDA version** are the targets (lab machine, cluster node type)? | Pick one reference GPU for all recorded numbers and write it in README's machine table. Require CUDA ≥ 11.8 (12.x preferred). Build with `CUDA_ARCH ?= native` (nvcc `-arch=native`, CUDA ≥ 11.6), overridable (`CUDA_ARCH=sm_80`). The cluster GPU type decides Phase D's arch. | B0.1 |
-| D-B2 | **Matmul: bespoke kernels or cuBLAS?** `docs/HANDOFF.md` currently says "cuBLAS SGEMM ... is the expected implementation". The proposal says the team writes "the GPU kernels for the matrix multiplication", and CLAUDE.md requires bespoke transformer ops. | **Bespoke tiled SGEMM kernels are the default and the only path in the model.** cuBLAS may optionally be linked into the TEST and BENCH builds as an oracle and a performance yardstick, behind `MATMUL_REF=cublas`, if the team approves it (it is a CUDA-toolkit library, cited in THIRD_PARTY.md). HANDOFF's matmul paragraph is then amended. | B2.1 |
-| D-B8 | **Contract additions to `backend.h`** (§4.4): `dev_init(int local_rank)` (device selection, needed for Phase D) and `dev_peak_bytes()` (device memory high-water mark for `bench`). | Approve both now. They are additive; the CPU implementation is a no-op and a byte counter. | B0.2 |
-| D-B9 | **May Phase B start before the Serial Complete gate (ROADMAP §14) is signed off?** Open: the P5.2 run, the P6 grammatical check and scoring pilot, and the P5.3 review. None of them changes a contract. | Yes. Record a waiver in DECISIONS: Phase B may start, and the gate must be signed off before B5.4 (CUDA equivalence sign-off). | B0.1 |
-| D-B11 | **Kernel source layout:** one `ops_cuda.cu`, or one `.cu` per op family? | One `.cu` per family, mirroring serial: `src/ops/{embedding,layernorm,elementwise,matmul,attention,softmax_xent,optim}_cuda.cu`, plus `src/ops/cuda_common.cuh` for shared device helpers (block reduce, launch macros). `ops_cuda.cu` (the P7.5 stub) is deleted in B0.2. | B0.2 |
+| ID | Decision | Consequences in this roadmap |
+|---|---|---|
+| D-B1 | **Target GPU:** NVIDIA Quadro M2000M (sm_50, 4 GB), driver 580.178.04, CUDA Toolkit **nvcc 12.9**. | §2.1; `CUDA_ARCH ?= sm_50`; toolkit pinned at 12.x; estimates in §7 sized for this GPU; B0.1 verifies the specifications. |
+| D-B2 | **cuBLAS is used for the matrix products in the model,** with citation in `THIRD_PARTY.md` (added). | `matmul_forward/backward` call `cublasSgemm` (`cublasDgemm` in the double build); the attention ops call `cublasSgemmStridedBatched`. Everything else is bespoke. The cuBLAS handle is owned by `backend_cuda` (§4.3). The bespoke GEMM becomes an optional comparison exercise (B2.3). |
+| D-B8 | **`backend.h` gains `dev_init(int local_rank)` and `dev_peak_bytes()`.** | Done 2026-11-18: header, CPU implementation, `test_runtime` test, and `dev_init(0)` in every app (§4.4). The CUDA implementation is part of B0.2. |
+| D-B9 | **Phase B may begin.** Phase A waits only on the manual story evaluations (P6.3 pilot), then the P5.3 review. | Serial Complete sign-off is still required before B5.4. |
+| D-B11 | **One `.cu` file per op family, mirroring the serial files:** `src/ops/{embedding,layernorm,elementwise,matmul,attention,softmax_xent,optim}_cuda.cu`, plus `src/ops/cuda_common.cuh` for shared device helpers. | The P7.5 stub `src/ops/ops_cuda.cu` is removed in B0.2. |
 
 ---
 
@@ -168,17 +219,20 @@ P6.3 scoring pilot, and the P5.3 Serial Complete review. See decision D-B9.
 
 ```
 include/tslm/ops.h               unchanged (contract)
-include/tslm/backend.h           + dev_init, dev_peak_bytes (D-B8, if approved)
+include/tslm/backend.h           + dev_init, dev_peak_bytes (D-B8, added 2026-11-18)
 include/tslm/check.h             CUDA_CHECK(call) implemented for BACKEND=cuda
 src/backend/backend_cuda.cu      dev_malloc=cudaMalloc, dev_free, dev_memset=cudaMemset,
                                  copy_*=cudaMemcpy (synchronous), dev_sync=cudaDeviceSynchronize,
-                                 dev_name=GPU name + compute capability, dev_init, dev_peak_bytes
+                                 dev_name=GPU name + compute capability, dev_init (cudaSetDevice,
+                                 cuBLAS handle, reduction scratch), dev_peak_bytes
+src/backend/cuda_internal.h      INTERNAL (not a contract): cublas_handle() and the persistent
+                                 device scratch used by reductions; included only by *_cuda.cu
 src/ops/cuda_common.cuh          device helpers: warp/block reductions (fixed order),
                                  grid-stride loop helpers, launch-check macro, ceil_div
 src/ops/<family>_cuda.cu         one per op family (D-B11); host wrappers with the
                                  exact ops.h signatures launch the kernels
-src/ops/gemm_cuda.cuh            internal bespoke (batched, strided) SGEMM used by matmul
-                                 and attention; NOT part of ops.h
+src/ops/blas_cuda.cuh            internal row-major wrappers over cublasSgemm /
+                                 cublasSgemmStridedBatched (Dgemm when real_t is double)
 tests/devbuf.h                   test helper: DevBuf<T> (device buffer from a host vector,
                                  to_host()), works in every build (B0.3)
 tests/test_equiv_ops.cpp         CUDA ops vs reference serial kernels, shape sweep (B0.4)
@@ -193,12 +247,14 @@ bench/cuda_W-*.csv               CUDA benchmark results
 - **Selecting the backend:** `BACKEND=cuda` selects `src/*/*_cuda.cu` and
   `src/backend/backend_cuda.cu`, compiled by `$(NVCC)`. Host `.cpp` files
   are compiled by `$(CXX)`. The link uses `$(NVCC)`, or `$(CXX)` plus
-  `-lcudart` (add `-lcublas` only if D-B2 approves the reference).
+  `-lcudart -lcublas`.
 - **`nvcc` flags:** `-std=c++17 -O3 -arch=$(CUDA_ARCH) -lineinfo
-  -Xcompiler -Wall,-Wextra`, the same `-D` selection macros, and **no**
-  `--use_fast_math`.
+  -Wno-deprecated-gpu-targets -Xcompiler -Wall,-Wextra`, the same `-D`
+  selection macros, and **no** `--use_fast_math`.
+- **Toolkit:** nvcc 12.9 (D-B1; 13.x cannot target sm_50).
 - **Configurations and stamps:**
-  - `CUDA_ARCH ?= native`. The target stamp (`build/<tag>/target.stamp`)
+  - `CUDA_ARCH ?= sm_50` (the reference GPU; `native` also works on the
+    GPU machine). The target stamp (`build/<tag>/target.stamp`)
     must include `$(NVCC) --version` and `CUDA_ARCH`, so a different
     toolkit or GPU rebuilds everything.
   - Build directories: `build/release-cuda-serial-float/`, and so on.
@@ -230,9 +286,19 @@ bench/cuda_W-*.csv               CUDA benchmark results
      surface at the faulting op.
 2. **No allocation and no host synchronisation inside ops**, and no
    `cudaMemcpy` except the scalar results of `sum_reduce`/`sumsq_reduce`,
-   which must return a host `double`. Those two may use a small persistent
-   device scratch allocated once by `backend_cuda` at `dev_init`/first use,
-   never in the loop; document it.
+   which must return a host `double`.
+   - **Persistent resources:** the reduction scratch and the cuBLAS handle
+     are created once by `backend_cuda` at `dev_init`/first use, never in
+     the loop.
+   - **How ops reach them:** through `src/backend/cuda_internal.h`. This is
+     the only "global state" ops may touch, and ops never create handles or
+     buffers.
+   - **cuBLAS calls:**
+     - every call is checked (`CUBLAS_CHECK`);
+     - the handle uses the default stream and `CUBLAS_DEFAULT_MATH` (no
+       TF32; the M2000M has no tensor cores anyway);
+     - its pointer mode is host (scalar `alpha`/`beta` from host
+       variables).
 3. **Index types:** `size_t` for element offsets; `int` only where the
    value is provably < 2³¹. Every index that multiplies two dimensions
    casts first (`size_t(n) * C`), exactly as in serial.
@@ -253,27 +319,31 @@ bench/cuda_W-*.csv               CUDA benchmark results
    repack tensors in the arena. Internal transposes happen only in
    registers or shared memory.
 
-### 4.4 Contract additions (pending approval D-B8)
+### 4.4 Contract additions (D-B8: approved and made 2026-11-18)
 
 ```cpp
 // backend.h (additive)
-// Select and initialise the device for this process: CUDA cudaSetDevice(local_rank % device_count)
-// plus a warm-up; CPU no-op. Called once by every app right after comm_init, before any dev_*.
+// Select and initialise the device for this process. CUDA: cudaSetDevice(local_rank % device_count),
+// create the cuBLAS handle and the reduction scratch. CPU: argument checks only.
+// Optional with one device (the first dev_* call then uses device 0); if called, it must come
+// before any other dev_* call, at most once, with local_rank >= 0.
 void dev_init(int local_rank);
-// High-water mark of bytes allocated through dev_malloc (CPU: same counter, host bytes).
+// High-water mark of the bytes requested through dev_malloc and not yet freed.
 size_t dev_peak_bytes();
 ```
 
-- **Callers:**
-  - `train`, `bench`, `generate`, `eval` and `gradcheck` call
-    `dev_init(...)`;
-  - serial and Phase B pass 0;
-  - Phase D passes the node-local rank (§9).
+- **Implemented in the CPU backend** (the size is kept in a 64-byte block
+  header, so alignment is unchanged) and tested by `test_runtime`
+  `dev_init_and_peak_bytes`.
+- **Callers:** `train`, `bench`, `eval_loss`, `generate`, `eval`,
+  `gradcheck` and `dump_init` already call `dev_init(0)`. Phase D passes
+  the node-local rank (§9).
+- **`backend_cuda.cu` (B0.2)** implements the same semantics.
 - **`bench`:** `peak_mem_MB` in CUDA builds = `dev_peak_bytes()/2²⁰`
   (device memory). The CSV columns are unchanged.
-- **Manifests and bench:** `dev_name()` returns, e.g., "NVIDIA A100-SXM4-40GB
-  (sm_80), driver 535.x, CUDA runtime 12.2". The bench manifest records it,
-  so every CUDA number names its GPU.
+- **Manifests and bench:** `dev_name()` returns, e.g., "Quadro M2000M
+  (sm_50), driver 580.178.04, CUDA runtime 12.9". The bench manifest records
+  it, so every CUDA number names its GPU.
 
 ### 4.5 Host ↔ device data flow per step (unchanged from serial)
 
@@ -362,42 +432,42 @@ confirms or revises them. N = B·T rows.
     and not visible in `ops.h`.
   - rel-L2 ≤ 1e-5.
 
-### 5.4 Matmul (`matmul_cuda.cu`, `gemm_cuda.cuh`), the critical path
+### 5.4 Matmul (`matmul_cuda.cu`, `blas_cuda.cuh`), the critical path, on cuBLAS (D-B2)
 
 The serial profile puts 81% of time here.
 
-- **One internal bespoke GEMM:**
-  - It computes `C[M,N] (=|+=) α·op(A)·op(B)` with row-major strides,
-    optional batch strides, and transpose flags.
-  - It is used by `matmul_forward`/`backward` and by the attention batched
-    GEMMs.
-  - Development order: a naive one-thread-per-output kernel first (the
-    correctness reference for later steps), then shared-memory tiling, then
-    register blocking.
-  - The final kernel is expected to be a tiled kernel: block tile of the
-    order of 64×64 or 128×64, K-tile 8–32, each thread computing a 4×4 or
-    8×8 register micro-tile, double-buffered shared-memory loads optional.
-    Document the choice in `docs/PROFILE_CUDA.md`.
-- **The three uses:**
-  - `matmul_forward`: `out[N,OC] = inp[N,C]·W[OC,C]ᵀ (+ bias)`.
-  - `matmul_backward`: `dinp[N,C] += dout[N,OC]·W[OC,C]`;
-    `dW[OC,C] += dout[N,OC]ᵀ·inp[N,C]`;
-    `dbias[OC] += column sums of dout` (deterministic column reduction as in
-    §5.3, skipped when null).
-  - All three accumulate.
-- **No split-K with atomics (D-B3).** If split-K is needed for `dW`
-  (K = N = 8192), write per-split partials into scratch and reduce them in
-  fixed order.
+- **Row-major on a column-major library.** A row-major matrix `X[r,c]` is,
+  to cuBLAS, the column-major matrix `Xᵀ` with leading dimension `c`. So
+  each product is computed as its transpose. With `cublasSgemm(handle,
+  opA, opB, m, n, k, α, A, lda, B, ldb, β, C, ldc)`:
+
+  | ops.h product | What cuBLAS computes (column-major) | Call |
+  |---|---|---|
+  | `out[N,OC] = inp[N,C]·W[OC,C]ᵀ` | `outᵀ[OC,N] = W·inpᵀ` | `opA=T, opB=N, m=OC, n=N, k=C, A=W lda=C, B=inp ldb=C, β=0, C=out ldc=OC` |
+  | `dinp[N,C] += dout[N,OC]·W[OC,C]` | `dinpᵀ[C,N] += Wᵀ·doutᵀ` | `opA=N, opB=N, m=C, n=N, k=OC, A=W lda=C, B=dout ldb=OC, β=1, C=dinp ldc=C` |
+  | `dW[OC,C] += dout[N,OC]ᵀ·inp[N,C]` | `dWᵀ[C,OC] += inpᵀ·dout` | `opA=N, opB=T, m=C, n=OC, k=N, A=inp lda=C, B=dout ldb=OC, β=1, C=dW ldc=C` |
+
+  This mapping is the design intent; `test_equiv_ops` over the full shape
+  sweep is what proves it, so an error here cannot survive B2.2.
+- **Bias:**
+  - Forward: GEMM with `β=0`, then a bespoke bias-broadcast kernel (skipped
+    when `bias` is null).
+  - `dbias[OC] += column sums of dout`: a bespoke deterministic column
+    reduction as in §5.3, skipped when null.
+- **Accumulate:** all three backward outputs accumulate (`β=1`). The tied
+  head's `dW` is `wte`'s gradient, which later also receives the embedding
+  gradient.
+- **Precision:** `real_t=double` builds call `cublasDgemm` (the gradcheck
+  build). The wrappers in `blas_cuda.cuh` pick S or D at compile time.
 - **Edge shapes:** any `N, C, OC`, including N = 1 (generation), OC = V =
-  10,000 (not a multiple of the tile), and the tiny test shapes
-  {1, 7, 16, 100}. Bounds-check every load and store.
+  10,000, and the tiny test shapes {1, 7, 16, 100}. cuBLAS handles these;
+  the bias and dbias kernels bounds-check.
 - **Tolerance:** rel-L2 ≤ 1e-5 per output.
-- **Performance expectation:** to be measured.
-  - The kernel's GFLOP/s on the W-A head shape (N=8192, C=128, OC=10,000)
-    is reported in `docs/PROFILE_CUDA.md`.
-  - If cuBLAS is approved as a yardstick (D-B2), the target is ≥ 50% of
-    cuBLAS SGEMM on that shape. Otherwise the target is a documented
-    fraction of the GPU's FP32 peak.
+- **Performance:** recorded in `docs/PROFILE_CUDA.md`.
+  - Report cuBLAS GFLOP/s on the W-A head shape (N=8192, C=128,
+    OC=10,000) against the M2000M's ≈ 1.4 TFLOP/s FP32 peak.
+  - Optional (B2.3): a bespoke tiled SGEMM, measured against cuBLAS for the
+    report. It is never used in the model unless the team re-decides D-B2.
 
 ### 5.5 Softmax + cross-entropy (`softmax_xent_cuda.cu`)
 
@@ -420,6 +490,17 @@ The serial profile puts 81% of time here.
 `qkv [B,T,3C]`: Q, K, V for head h are strided views with leading dimension
 3C and offsets `0, C, 2C` plus `h·hs`. `att [B,NH,T,T]`. `hs = C/NH`.
 
+- **GEMMs on cuBLAS (D-B2):** for each batch row b, one
+  `cublasSgemmStridedBatched` call over the NH heads.
+  - Inside a row of `qkv`, head h starts `h·hs` elements after head 0, so
+    the batch stride between heads is `hs`.
+  - The leading dimension is 3C for Q, K, V and C for `out`/`dout`.
+  - `att` and `scratch` use a batch stride of T·T.
+  - The 1/√hs scale is the `α` of the QKᵀ (and dQ, dK) GEMMs.
+  - The same row-major-as-transpose mapping as §5.4 applies; it is verified
+    by `test_equiv_ops`.
+  - B calls per op (B = 32) is acceptable; a pointer-array batched call over
+    (b, h) is an optional optimization.
 - **Forward:**
   1. Batched GEMM over (b, h): `S = Q·Kᵀ·(1/√hs)` into `att`.
   2. Row kernel: causal mask, max-subtracted softmax over t2 ≤ t, and
@@ -433,11 +514,12 @@ The serial profile puts 81% of time here.
      `dpre = att ⊙ (datt − rowsum(att ⊙ datt))`.
   4. `dQ += dpre·K/√hs`.
   5. `dK += dpreᵀ·Q/√hs`.
-- **Causal efficiency:** the first implementation may compute full T×T
-  tiles and mask them. B6.3 adds upper-triangle tile skipping in the GEMMs
-  (tiles entirely above the diagonal are skipped, and diagonal tiles are
-  masked). Benchmark notes must say which version ran (`docs/PROFILE.md`,
-  serial is triangular).
+- **Causal efficiency:** cuBLAS computes the full T×T products, which the
+  row kernels then mask: about 2× the serial attention arithmetic for these
+  GEMMs. Benchmark notes must say "full-tile attention" (`docs/PROFILE.md`:
+  serial is triangular). B6.3 optionally adds a bespoke causal-tile batched
+  GEMM (tiles entirely above the diagonal skipped) and compares it with the
+  cuBLAS version.
 - **Exactness requirements:**
   - Positions < t are unaffected by token t: the causality test uses
     `memcmp`, so the masked entries must not leak through NaN, Inf or
@@ -529,20 +611,25 @@ The serial profile puts 81% of time here.
   - W-B (`base`) is required for CUDA, since it is cheap on a GPU.
 - **Speedup:** serial ÷ CUDA median step time on the identical workload.
   Also report throughput (tok/s).
-  - Speedups are only meaningful on the same host CPU for data and host
-    work. The serial number comes from its reference machine; state both
-    machines next to every speedup.
+  - Speedups are only meaningful on the same machine. The serial
+    benchmarks are therefore re-run on the GPU machine's CPU (B6.4), and
+    every speedup names both the CPU and the GPU.
   - Never quote a speedup that is not computed from committed CSV rows.
 - **Fixed wall-clock budget** (the proposal's metric): train `small` for the
   same number of minutes with serial and CUDA (e.g. 30 min each; the exact
   budget is set in B6.5). Record tokens consumed and final val loss.
-- **Estimates to plan with** (not results):
-  - `small` is ≈ 9×10¹⁰ FLOP/step (ROADMAP §13). At an effective 5–10
-    TFLOP/s that is ~10–20 ms/step, so one epoch of the full train set
-    (463.8M tokens, 56,620 steps at 8,192 tokens/step) is ~10–20 min.
-  - `base` (≈ 3×10¹¹ FLOP/step) is roughly 3× that.
-  - Full-dataset training, which serial cannot do (serial W-A: 3.61 s/step,
-    i.e. ~57 h per epoch), becomes practical. Measure it in B6.5.
+- **Estimates to plan with** (not results; sized for the M2000M, §2.1):
+  - `small` is ≈ 9×10¹⁰ FLOP/step (ROADMAP §13). If cuBLAS and our kernels
+    reach an effective 0.5–1.0 TFLOP/s (35–70% of the ≈ 1.4 TFLOP/s peak),
+    that is ~90–180 ms/step: roughly 20–40× the serial step on the same
+    laptop CPU (≈ 3.95 s/step in the P5.2 log).
+  - One epoch of the full train set (463.8M tokens, 56,620 steps at 8,192
+    tokens/step) is then ~1.5–3 h for `small`.
+  - `base` (≈ 3×10¹¹ FLOP/step) is ~0.3–0.6 s/step, ~5–10 h per epoch.
+  - Serial would need ~57 h per `small` epoch. The memory bandwidth
+    (≈ 80 GB/s) also limits the element-wise and softmax kernels over the
+    312 MB logits buffers.
+  - Measure everything in B6; these numbers only size the plan.
 - **Profiling:** `nsys profile` for the timeline and `ncu` for per-kernel
   metrics (dev-time only, like gprof). Record the per-kernel time share in
   `docs/PROFILE_CUDA.md` in the format of the serial profile. Expect matmul
@@ -569,8 +656,8 @@ Every task's DoD includes "real output from a GPU machine shown"
 
 | ID | Task | Owner | DoD |
 |---|---|---|---|
-| B0.1 | Settle D-B1 (GPU, CUDA version, arch) and D-B9 (gate waiver) in DECISIONS. Install and verify the toolkit on the GPU machine: `nvcc --version`, `nvidia-smi`, a trivial kernel compiled with the project flags | Vincent | DECISIONS entry; toolchain output recorded; README machine table gains a GPU row |
-| B0.2 | CUDA build plumbing: remove the `BACKEND=cuda` guard in `build_config.h`; implement `CUDA_CHECK`; write `backend_cuda.cu` (incl. D-B8 functions if approved); split `ops_cuda.cu` into per-family files (D-B11) whose wrappers initially `CHECK(false, "not implemented: <op>")`; Makefile `.cu` flags, `CUDA_ARCH`, link, stamp including the nvcc version, `MODE=debug` and `sanitize` targets | Vincent | `make BACKEND=cuda` builds every app; `bin/cuda-float/...` runs and aborts with "not implemented: …" at the first op; CPU build unchanged (`make test` green with identical recorded values) |
+| B0.1 | Verify the D-B1 machine: `nvidia-smi` (driver 580.178.04, memory free, other processes), `nvcc --version` (12.9), `cudaGetDeviceProperties` (sm_50, 5 SMs, 4 GB, shared memory per block, kernel exec timeout), the cuBLAS library version, and a trivial kernel plus one `cublasSgemm` built with the project flags (`-arch=sm_50 -Wno-deprecated-gpu-targets`) | Vincent | Output recorded in DECISIONS; README machine table gains the GPU row; THIRD_PARTY cuBLAS version filled in |
+| B0.2 | CUDA build plumbing: remove the `BACKEND=cuda` guard in `build_config.h`; implement `CUDA_CHECK` and `CUBLAS_CHECK`; write `backend_cuda.cu` (`dev_init`: cudaSetDevice, cuBLAS handle, reduction scratch; `dev_peak_bytes`) and `cuda_internal.h`; replace the stub `ops_cuda.cu` with the per-family files (D-B11) whose wrappers initially `CHECK(false, "not implemented: <op>")`; Makefile `.cu` flags (`-arch=sm_50`, `-Wno-deprecated-gpu-targets`), `-lcublas -lcudart`, `bin/cuda-<real>/`, stamp including the nvcc version, `MODE=debug` and `sanitize` targets; `bench` reports `dev_peak_bytes()` in CUDA builds | Vincent | `make BACKEND=cuda` builds every app; `bin/cuda-float/...` runs and aborts with "not implemented: …" at the first op; CPU build unchanged (`make test` green with identical recorded values) |
 | B0.3 | Backend-agnostic tests: add `tests/devbuf.h`; migrate every test that passes host memory to `ops::` or reads model buffers directly (§2 list and all op tests) | Vincent | CPU `make test`, `make debug`, `make test REAL=double` green with unchanged smoke val (5.7445), golden and checksum values; grep shows no direct host access to device-capable buffers in `tests/` |
 | B0.4 | Reference kernels and op equivalence: the `ops_ref` dual-compile rule; `tests/test_equiv_ops.cpp` (shape sweep, `+=` seeding, worst rel-L2 table); confirm or revise HANDOFF's proposed per-op tolerances | Vincent | Test builds and runs in the CUDA build (failing on unimplemented ops); passes trivially in the CPU build; tolerance table in DECISIONS |
 | B0.5 | `bin/dump_step`, `bin/compare_tensors`, `scripts/equiv.sh` (`make equiv`) for the §10 protocol at preset scale | Conor or Vincent | Runs CPU vs CPU (identical → rel 0) on the GPU machine; README entry |
@@ -588,9 +675,9 @@ Every task's DoD includes "real output from a GPU machine shown"
 
 | ID | Task | DoD |
 |---|---|---|
-| B2.1 | Settle D-B2. Write the internal GEMM, naive version (one thread per output, strided, batched, transpose flags, `=`/`+=`) | `matmul_forward/backward` equivalence over the full shape sweep incl. N=1 and OC=10,000 |
-| B2.2 | Tiled shared-memory GEMM | Same tests; GFLOP/s on the W-A head shape recorded vs the naive version (and cuBLAS if approved) in `docs/PROFILE_CUDA.md` |
-| B2.3 | Register-blocked GEMM, plus deterministic `dbias` and `dW` without atomic split-K | Same tests; performance table updated; `compute-sanitizer` racecheck clean |
+| B2.1 | `blas_cuda.cuh`: row-major wrappers over `cublasSgemm`/`cublasSgemmStridedBatched` (Dgemm for double) using the backend's handle (§5.4) | A direct test of each wrapper against a host reference on small non-square shapes (including transposes and β=1 accumulation) passes on the GPU |
+| B2.2 | `matmul_forward/backward` on the wrappers, plus the bespoke bias-broadcast and deterministic `dbias` kernels | `matmul_forward/backward` equivalence over the full shape sweep incl. N=1 and OC=10,000; `test_matmul*` pass in the CUDA build; cuBLAS GFLOP/s on the W-A head shape recorded in `docs/PROFILE_CUDA.md` |
+| B2.3 | Optional: bespoke tiled SGEMM (shared-memory tiles, register blocking), measured against cuBLAS for the report; not used in the model | Equivalence vs `ops_ref`; GFLOP/s vs cuBLAS in `docs/PROFILE_CUDA.md` |
 
 ### B3: LayerNorm and softmax + cross-entropy (W10)
 
@@ -603,8 +690,8 @@ Every task's DoD includes "real output from a GPU machine shown"
 
 | ID | Task | DoD |
 |---|---|---|
-| B4.1 | `attention_forward` via batched GEMM + masked softmax kernel (full tiles allowed) | Equivalence passes; `test_attention` incl. exact-zero upper triangle and op-level causality |
-| B4.2 | `attention_backward` via batched GEMMs + the softmax-backward row kernel in `scratch` | Equivalence passes (Q/V slices; key slice by bound); `test_attention_backward` passes |
+| B4.1 | `attention_forward` via `cublasSgemmStridedBatched` (QKᵀ, att·V) + the causal masked softmax row kernel (§5.6) | Equivalence passes; `test_attention` incl. exact-zero upper triangle and op-level causality |
+| B4.2 | `attention_backward` via strided-batched GEMMs + the softmax-backward row kernel in `scratch` | Equivalence passes (Q/V slices; key slice by bound); `test_attention_backward` passes |
 
 ### B5: integration and sign-off (W10–W11, "CUDA correctly validates")
 
@@ -621,9 +708,9 @@ Every task's DoD includes "real output from a GPU machine shown"
 | ID | Task | DoD |
 |---|---|---|
 | B6.1 | `nsys`/`ncu` profile of W-A in the CUDA build; per-kernel share table | `docs/PROFILE_CUDA.md` + committed text profile |
-| B6.2 | Optimize the top kernels by profile (GEMM tiling parameters, softmax-xent row kernel, LayerNorm), each change measured and documented, numerics re-verified | Each optimization: before/after numbers in PROFILE_CUDA.md; suite + equiv green |
-| B6.3 | Causal tile skipping in attention GEMMs (§5.6) | Equivalence + causality pass; attention time before/after recorded |
-| B6.4 | CUDA benchmarks W-A, W-B, W-C (3 runs each, ±3%); speedup table vs serial (computed from CSVs) | `bench/cuda_W-*.csv` committed; table in `docs/RUNS.md` or a results doc |
+| B6.2 | Optimize the top bespoke kernels by profile (softmax-xent row kernel, LayerNorm, element-wise, embedding backward; cuBLAS call shapes and batching), each change measured and documented, numerics re-verified | Each optimization: before/after numbers in PROFILE_CUDA.md; suite + equiv green |
+| B6.3 | Optional: bespoke causal-tile batched GEMM for attention (§5.6), compared with the cuBLAS full-tile version | Equivalence + causality pass; attention time for both versions recorded |
+| B6.4 | CUDA benchmarks W-A, W-B, W-C on the M2000M (3 runs each, ±3%); serial benchmarks re-run on the same machine's CPU (`bench/serial_<machine>_W-*.csv` or a `--machine_id` that names it); speedup table computed from the CSVs | CSVs committed; speedup table in `docs/RUNS.md` or a results doc, naming CPU and GPU and stating "full-tile attention" |
 | B6.5 | Fixed-budget comparison (serial vs CUDA, same minutes) and a CUDA full-dataset `small` run (and `base` if time allows); eval samples scored with `eval/RUBRIC.md` as milestone `cuda-<preset>-step<k>` | Results recorded in `docs/RUNS.md` from `log.csv`; scores in `eval/scores.csv` |
 
 ### B7: hand-off to Phase D (W11)
@@ -631,7 +718,7 @@ Every task's DoD includes "real output from a GPU machine shown"
 | ID | Task | DoD |
 |---|---|---|
 | B7.1 | Device-pointer readiness of `comm.h`: document and test (with a fake 1-rank comm) that `comm_allreduce_avg(model->grads, ...)` and `comm_broadcast(model->params, ...)` are called with device pointers; decide CUDA-aware MPI vs host staging (§9) | DECISIONS entry; HANDOFF updated with the Phase D notes |
-| B7.2 | `dev_init(local_rank)` wired in every app (if D-B8 approved) | Apps call it; serial and CUDA unchanged |
+| B7.2 | Done 2026-11-18 (D-B8): every app calls `dev_init(0)`; Phase C/D replace 0 with the node-local rank from `comm_init` | n/a (recorded in DECISIONS) |
 
 ---
 
@@ -672,7 +759,11 @@ Phase B must leave these true:
 | Risk | Mitigation |
 |---|---|
 | No GPU in the LLM's development container; code "looks right" but never ran | §11 verification protocol: no task is Done without GPU output; compile-only checks are labelled as such |
-| GEMM kernel too slow, making the CUDA results look bad | Naive → tiled → register-blocked progression with measured GFLOP/s; optional cuBLAS yardstick (D-B2); profile-driven B6.2 |
+| Row-major/column-major mistakes in the cuBLAS calls (silently wrong products) | The §5.4 mapping table; B2.1 wrapper tests on non-square shapes; full `test_equiv_ops` sweep |
+| Toolkit upgrade breaks the build (CUDA 13.x cannot target sm_50) | nvcc pinned at 12.9 (D-B1); the target stamp records the nvcc version |
+| 4 GB GPU shared with a display (less free memory; kernel watchdog) | Check in B0.1; `dev_peak_bytes`; reduce B for `base` if needed; keep kernels short |
+| Laptop thermal throttling makes timings drift | §12 protocol (3 runs, ±3%); note power and thermal state in the bench manifest; rerun when out of tolerance |
+| FP64 gradcheck slow on Maxwell (1/32 rate) | Gradcheck uses the tiny model only |
 | Non-determinism from atomics or uninitialised scratch breaks determinism/resume tests | D-B3 (no float atomics); `compute-sanitizer --tool initcheck`; tests seed accumulated outputs |
 | Silent overwrite instead of accumulate (tied `wte` loses the head gradient) | Equivalence tests seed outputs non-zero; golden tied test; HANDOFF notes |
 | Out-of-bounds on edge shapes (N=1, OC=10,000) | Shape sweep in `test_equiv_ops`; memcheck |
@@ -680,7 +771,7 @@ Phase B must leave these true:
 | Speedup misreported (different machines, warm vs cold, full vs triangular attention) | §12 rules, machine recorded per row, attention mode stated, numbers only from committed CSVs |
 | Stale objects across toolkits or GPUs (as happened across CPUs in Phase A) | Target stamp includes the nvcc version and `CUDA_ARCH`; clean rebuild before recording numbers (DECISIONS procedure) |
 | Phase D blocked by host-pointer assumptions | §2 audit already clean; B7.1 test with device pointers |
-| Arena does not fit a smaller GPU | `base` needs 2.05 GB at B=32; reduce B (arena ∝ B·T, `att` ∝ B·T²); `dev_peak_bytes` reported |
+| Arena too large for the free GPU memory | `base` needs 2.05 GB at B=32 of the M2000M's 4 GB; reduce B (arena ∝ B·T, `att` ∝ B·T²); `dev_peak_bytes` reported |
 
 ---
 
@@ -723,7 +814,7 @@ with this roadmap.
 - [ ] Every `ops.h` function implemented in CUDA; no "not implemented" path
   left; `ops_cuda.cu` stub removed
 - [ ] `make BACKEND=cuda test` and `make BACKEND=cuda REAL=double test`
-  green on the reference GPU (output recorded)
+  green on the reference GPU, the Quadro M2000M (output recorded)
 - [ ] `make BACKEND=cuda sanitize` clean
 - [ ] `make equiv`: §10 protocol met for `smoke` and `small`; cross-build
   checkpoint resume works both ways
@@ -731,7 +822,8 @@ with this roadmap.
   (smoke 5.7445, checksum `0d80323551e3bb51` on the serial reference
   machine)
 - [ ] `bench/cuda_W-A.csv`, `cuda_W-B.csv`, `cuda_W-C.csv` committed (±3%);
-  speedups computed from CSVs with both machines named
+  serial re-benchmarked on the same machine's CPU; speedups computed from
+  CSVs with CPU and GPU named
 - [ ] `docs/PROFILE_CUDA.md` with the per-kernel profile and every
   optimization
 - [ ] Fixed-budget comparison and a CUDA full-dataset run recorded in

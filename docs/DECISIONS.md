@@ -1401,3 +1401,72 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   - P6.1 is done (see the previous entry).
   - The P6.3 two-rater pilot is still pending (`docs/runs/small_p52/samples_2400.txt`).
   - P5.3 (Serial Complete review) can proceed once the pilot is recorded.
+
+## 2026-11-18: Phase B team decisions (ROADMAP_CUDA.md §3: D-B1, D-B2, D-B8, D-B9, D-B11)
+
+- **D-B1, target GPU:** an NVIDIA Quadro M2000M, driver 580.178.04
+  (`nvidia-smi` reports CUDA 13.0, the newest runtime this driver supports),
+  CUDA Toolkit `nvcc` 12.9.
+  - **Implications** (from NVIDIA's published specifications; each is
+    confirmed on the machine in B0.1 with `cudaGetDeviceProperties`):
+    - Maxwell GM107, compute capability **5.0**: build `-arch=sm_50`.
+    - 640 CUDA cores in 5 SMs, about 1.4 TFLOP/s FP32 peak.
+    - FP64 at 1/32 of the FP32 rate.
+    - 4 GB GDDR5, about 80 GB/s.
+    - 48 KB shared memory per block.
+    - No tensor cores (TF32 and FP16 tensor paths do not exist).
+  - **Toolkit:** CUDA 13.0 removed offline compilation for GPUs below
+    compute capability 7.5 (Maxwell, Pascal, Volta), per NVIDIA's CUDA 13.0
+    release notes. Builds therefore use **nvcc 12.9**, which still targets
+    sm_50 (with a deprecation warning that the Makefile silences with
+    `-Wno-deprecated-gpu-targets`). The toolkit must not be upgraded to
+    13.x for this GPU. Driver 580 runs 12.9-built code.
+  - **Memory:** `base` at B=32 needs 2,050 MB (HANDOFF) plus the CUDA
+    context and cuBLAS workspace, which fits in 4 GB. If the GPU also drives
+    a display, less is free and a kernel time limit (watchdog) may apply.
+  - **Double build:** the `REAL=double` gradcheck build runs on the GPU at
+    the 1/32 FP64 rate. That is acceptable for the tiny gradcheck model.
+- **D-B2, cuBLAS for the matrix products:** approved, with citation (added to
+  `THIRD_PARTY.md`).
+  - Used for `matmul_forward`/`matmul_backward` (SGEMM, or DGEMM in the
+    double build) and the batched products inside the attention ops
+    (strided-batched GEMM). Every other kernel is written for this project.
+  - `docs/HANDOFF.md`'s matmul note ("cuBLAS SGEMM ... is the expected
+    implementation") stands.
+  - **Determinism:** NVIDIA documents cuBLAS results as bit-wise
+    reproducible run to run for the same toolkit version, the same GPU
+    architecture and SM count, and a single stream, except for routines that
+    use atomics (not used here). D-B3 (no float atomics in our own kernels)
+    still applies.
+  - **The cuBLAS handle:** owned by `backend_cuda`, created at `dev_init`,
+    reached by ops through an internal header. Ops create no handles.
+- **D-B8, `backend.h` additions:** approved and implemented in this change,
+  under the contract-change process.
+  - `void dev_init(int local_rank)`: selects and initialises the device.
+    Optional with one device; if called, it must come before any other
+    `dev_*` call, once, with rank ≥ 0. CPU: checks only.
+  - `size_t dev_peak_bytes()`: the high-water mark of bytes requested
+    through `dev_malloc` and not yet freed. The CPU build keeps the size in a
+    64-byte block header, so returned pointers stay 64-byte aligned.
+  - Every app calls `dev_init(0)`: train, bench, eval_loss, generate, eval,
+    gradcheck, dump_init.
+  - Tests: `test_runtime` `dev_init_and_peak_bytes` (first in the file),
+    covering the counter arithmetic, the peak, and the three misuse cases.
+  - **Impact:** Phase B implements both in `backend_cuda.cu` (`cudaSetDevice`
+    and the byte counter), and `bench` reports `dev_peak_bytes()` as
+    `peak_mem_MB` in CUDA builds. Phase D passes the node-local rank. Serial
+    results are unchanged: `make test` values are identical.
+- **D-B9, gate waiver:** Phase B development may begin now.
+  - Phase A's remaining items are the manual story evaluations of the P5.2
+    samples (the P6.3 two-rater pilot), then the P5.3 Serial Complete
+    review. P5.2 and P6.1 are done.
+  - The Serial Complete sign-off is still required before B5.4 (the CUDA
+    equivalence sign-off).
+- **D-B11, kernel files:** one `.cu` file per op family, mirroring the serial
+  `src/ops/*_cpu.cpp`: `embedding_cuda.cu`, `layernorm_cuda.cu`,
+  `elementwise_cuda.cu`, `matmul_cuda.cu`, `attention_cuda.cu`,
+  `softmax_xent_cuda.cu`, `optim_cuda.cu`, plus `src/ops/cuda_common.cuh`
+  for shared device helpers. The P7.5 stub `src/ops/ops_cuda.cu` is removed
+  in B0.2.
+- `ROADMAP_CUDA.md` was updated to match. Its §3 now lists these as
+  decided.

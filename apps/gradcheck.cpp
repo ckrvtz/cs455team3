@@ -7,6 +7,7 @@
 // (config.h) override the model and batch (--batch_size, --seq_len, --seed).
 // Prints a per-tensor table and exits 0 on PASS, 1 on FAIL. Requires the
 // REAL=double build: the §10 criterion (rel err < 1e-6) is defined there.
+#include "tslm/backend.h"
 #include "tslm/common.h"
 #include "tslm/config.h"
 #include "tslm/gradcheck.h"
@@ -28,6 +29,7 @@ static double parse_double_or_die(const std::string& key, const std::string& v) 
 }
 
 int main(int argc, char** argv) {
+    dev_init(0);
     CHECK(REAL_IS_DOUBLE, "gradcheck requires the double-precision build: run `make REAL=double` and use "
                           "bin/release-double/gradcheck");
     GradcheckOptions opt = default_gradcheck_options();

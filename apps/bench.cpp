@@ -24,6 +24,7 @@ using namespace tslm;
 
 int main(int argc, char** argv) {
     comm_init(&argc, &argv);
+    dev_init(0);  // Phase D: the node-local rank
     std::string out, version = build_version(), machine_id = default_machine_id();
     BenchOptions opt;
     std::vector<const char*> rest = {argv[0]};

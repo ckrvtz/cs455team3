@@ -8,10 +8,39 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 using namespace tslm;
 
 // ---- backend ---------------------------------------------------------------
+
+// Must stay the FIRST test: dev_init is only legal before any other dev_* call
+// in the process (D-B8). Misuse is checked in forked children.
+TEST(dev_init_and_peak_bytes) {
+    std::string out;
+    EXPECT_TRUE(test::dies_with_abort([] { dev_init(-1); }, &out));
+    EXPECT_TRUE(out.find("local_rank") != std::string::npos);
+    dev_init(0);
+    EXPECT_TRUE(test::dies_with_abort([] { dev_init(0); }, &out));
+    EXPECT_TRUE(out.find("twice") != std::string::npos);
+
+    const size_t p0 = dev_peak_bytes();
+    void* a = dev_malloc(1000);
+    void* b = dev_malloc(3000);
+    EXPECT_EQ(dev_peak_bytes(), p0 + 4000);  // requested bytes, not rounded
+    EXPECT_EQ(reinterpret_cast<uintptr_t>(a) % DEV_ALIGN, uintptr_t(0));
+    dev_free(b);
+    void* c = dev_malloc(500);  // current = p0 + 1500 < peak
+    EXPECT_EQ(dev_peak_bytes(), p0 + 4000);
+    dev_free(a);
+    dev_free(c);
+    dev_free(nullptr);
+    void* d = dev_malloc(5000);  // a new high-water mark
+    EXPECT_EQ(dev_peak_bytes(), p0 + 5000);
+    dev_free(d);
+    // dev_init after any dev_* call is refused (fresh flag only matters in a child).
+    EXPECT_TRUE(test::dies_with_abort([] { dev_init(1); }, &out));
+}
 
 TEST(dev_malloc_alignment_and_zero_size) {
     EXPECT_TRUE(dev_malloc(0) == nullptr);

@@ -16,6 +16,17 @@
 //   dev_sync()          waits for all outstanding device work (no-op on CPU).
 //                       PhaseTimer calls it before reading the clock.
 //   dev_name()          human-readable device name for manifests/benchmarks.
+//   dev_init(local_rank) selects and initialises the device for this process
+//                       (CUDA: device local_rank % device_count; CPU: no device
+//                       work). Optional with one device: the first dev_* call
+//                       then uses device 0. If called, it must come before any
+//                       other dev_* call, at most once, with local_rank >= 0.
+//                       Apps call dev_init(0) (Phase D: the node-local rank).
+//   dev_peak_bytes()    high-water mark of the bytes requested through
+//                       dev_malloc and not yet freed, since process start.
+//                       bench reports it as peak_mem_MB in CUDA builds.
+// (dev_init and dev_peak_bytes were added for Phase B/D: docs/DECISIONS.md,
+// 2026-11-18, D-B8.)
 // The *_d2h/h2d naming is used even on CPU so that call sites already state
 // the direction that matters in the CUDA build.
 //
@@ -36,5 +47,7 @@ void copy_d2h(void* dst_host, const void* src_dev, size_t bytes);
 void copy_d2d(void* dst_dev, const void* src_dev, size_t bytes);
 void dev_sync();
 const char* dev_name();
+void dev_init(int local_rank);
+size_t dev_peak_bytes();
 
 }  // namespace tslm

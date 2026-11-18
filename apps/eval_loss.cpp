@@ -40,6 +40,7 @@ int parse_int_or_die(const std::string& key, const std::string& v) {
 
 int main(int argc, char** argv) {
     comm_init(&argc, &argv);
+    dev_init(0);  // Phase D: the node-local rank
     std::string ckpt, data;
     int batches = 20, B = 32, T = 0;
     for (int i = 1; i < argc; i += 2) {
