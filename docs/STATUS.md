@@ -1,7 +1,7 @@
 # Project status
 
-**Last updated:** 2026-11-18, through ROADMAP task **P7.5**, plus the P5.2
-results and verdict (commit `306f4cf`). This snapshot is updated on request,
+**Last updated:** 2026-11-18, through ROADMAP task **P7.5**, the P5.2 verdict,
+and the Phase B decisions and setup (commit `840fa9b`). This snapshot is updated on request,
 not after every task.
 - The live record of decisions: [`DECISIONS.md`](DECISIONS.md).
 - Build and run instructions: [`../README.md`](../README.md).
@@ -12,7 +12,7 @@ items.
 - **Working:** the data pipeline, forward and backward passes, AdamW,
   training with validation and checkpoint/resume, generation, prompt
   evaluation, benchmarking and profiling.
-- **Tests:** 30 test programs (154 test cases) in three build modes
+- **Tests:** 30 test programs (155 test cases) in three build modes
   (release, sanitizer debug, double precision), covering every ROADMAP §10
   sign-off layer.
 - **First real `small` run (P5.2):** done. Val loss 2.6455 (ppl 14.1) after
@@ -20,7 +20,12 @@ items.
 - **README:** verified command by command from a clean clone.
 - **Still open:** the two-rater scoring pilot (P6.3) and the Serial
   Complete review (P5.3).
-- **Next:** the CUDA build (Phase B), planned in `ROADMAP_CUDA.md`.
+- **Phase B has started on paper:**
+  - the team settled `ROADMAP_CUDA.md` §3: Quadro M2000M with nvcc 12.9,
+    cuBLAS for the matrix products, `dev_init`/`dev_peak_bytes` in
+    `backend.h`, Phase B may begin, one `.cu` per op family;
+  - CLAUDE.md carries the Phase B rules.
+  - No CUDA code exists yet; this development container has no GPU.
 
 ## Build and project docs
 - **`Makefile`:** builds the four modes through `BACKEND`/`COMM`/`REAL`.
@@ -44,12 +49,10 @@ items.
   device memory per preset.
 - **`ROADMAP_CUDA.md`:** the plan for Phase B (single-GPU CUDA), extensible
   to MPI+CUDA.
-- **`docs/proposals/CLAUDE_md_phase_B.md`:** proposed CLAUDE.md changes for
-  Phase B, pending team decisions (not applied).
 - **`THIRD_PARTY.md`:** citations, including the redistributed TinyStories
-  test excerpt.
-- **`CLAUDE.md` / `ROADMAP.md`:** the working agreement and the technical
-  plan.
+  test excerpt and cuBLAS (approved for Phase B).
+- **`CLAUDE.md` / `ROADMAP.md`:** the working agreement (now with the Phase B
+  CUDA rules) and the base technical plan.
 
 ## Core infrastructure (`include/tslm/`, `src/common/`, `src/backend/`, `src/comm/`)
 - **`build_config.h`, `common.h`, `check.h`:** the build mode, the `real_t`
@@ -64,7 +67,9 @@ items.
 - **`logging.h/.cpp`:** console messages and the fixed-column `log.csv`
   writer.
 - **`backend.h` / `backend_cpu.cpp`:** the memory layer. All model memory
-  goes through it, so the CUDA build can swap in GPU memory.
+  goes through it, so the CUDA build can swap in GPU memory. It also has
+  `dev_init(local_rank)`, called by every app, and `dev_peak_bytes()`, the
+  allocation high-water mark (D-B8).
 - **`comm.h` / `comm_serial.cpp`:** the communication layer, which does
   nothing in the serial build. `comm_mpi.cpp` is a stub for Phase C.
 - **`tensor_file.h/.cpp`:** a small file format for golden test data.
@@ -163,7 +168,7 @@ items.
 
 ## Tests (`tests/`)
 - **`test.h`:** our own test harness.
-- **30 test files (154 test cases)** covering:
+- **30 test files (155 test cases)** covering:
   - build mode, config, RNG, memory/communication/timer, layout;
   - tokenizer, `prepare_data`, data loader, vocab map;
   - forward ops, matmul, attention, softmax, model, golden tests;
@@ -190,9 +195,13 @@ items.
 1. **P6.3 pilot:** two team members score the sampled completions in
    `docs/runs/small_p52/samples_2400.txt` following `eval/RUBRIC.md` (pass:
    ≥ 27 of 30 score pairs within ±1, none differing by more than 2).
-2. **P5.3:** the Serial Complete review against ROADMAP §14.
-3. **Phase B:** the team settles the open decisions in `ROADMAP_CUDA.md` §3
-   (GPU target, bespoke matmul vs cuBLAS, `backend.h` additions, gate
-   waiver, kernel file layout). Then apply the accepted CLAUDE.md proposals
-   and start B0.1. Phase B needs a machine with an NVIDIA GPU; this
-   development container has none.
+2. **P5.3:** the Serial Complete review against ROADMAP §14. It must be
+   signed off before B5.4.
+3. **Phase B, starting with B0.1** on the M2000M machine:
+   - verify the GPU, driver, nvcc 12.9 and the cuBLAS version;
+   - then B0.2 (CUDA build plumbing), B0.3 (backend-agnostic tests, which
+     also merges the duplicated test helpers), and B0.4/B0.5 (equivalence
+     infrastructure).
+
+   CUDA work is verified only on that machine, since this container has no
+   GPU.
