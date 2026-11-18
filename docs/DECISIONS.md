@@ -372,3 +372,42 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   a benchmark, the machine spec table, and the clean-clone timing in its DoD.
   The ROADMAP edit itself is proposed separately. No effect on code, formats
   or the CUDA/MPI builds.
+
+## 2026-11-18: Gradient check uses a 4th-order 5-point finite difference (for P3.6), approved
+
+- **Change:** the full-model gradient check (P3.6, ROADMAP §10 "Gradcheck"
+  row) estimates each numeric derivative with the 4th-order central stencil
+  `f'(x) ≈ [−f(x+2h) + 8f(x+h) − 8f(x−h) + f(x−2h)] / (12h)` with **h = 1e-3**.
+  This replaces the 2-point central difference with ε = 1e-5. The **pass
+  criterion is unchanged:** every sampled entry (up to 20 random per tensor
+  plus first and last) must have
+  `|a − n| / max(|a|, |n|, 1e-8) < 1e-6` in the `REAL=double` build.
+  - The test also prints, per tensor, the worst relative error, the gradient
+    magnitude where it occurred, and the classic 2-point estimate, for
+    diagnosis.
+  - An entry that still fails is reported as a failure, never auto-passed,
+    even if it is below the measured noise floor. Such cases are resolved
+    case by case with the P3.7 PyTorch-autograd golden comparison.
+    Noise-aware acceptance (an absolute noise-floor pass) is not adopted;
+    it would need separate approval.
+- **Reason:** the 2-point difference has ~1e-10 absolute error (truncation
+  ε²|f'''|/6 plus rounding u·|L|/ε, with L ≈ ln 32 for the §10 model), so
+  gradient entries below ~1e-4 cannot be checked to 1e-6 even when the
+  backward is exact. That was observed in P3.3 and P3.4 (e.g. a 2.6e-7
+  gradient differing from its finite difference by 6e-12, the noise level).
+  The 5-point stencil (truncation O(h⁴), rounding ~1.5·u·|L|/h) is about 100×
+  more accurate (~1e-12 absolute), making entries down to ~1e-6 checkable at
+  the unchanged criterion. It costs twice the forward passes per entry,
+  which is negligible for the tiny gradcheck model.
+- **Rejected alternatives:** noise-aware acceptance (loosens the criterion for
+  small entries); a smaller-magnitude objective (no longer checks the real
+  loss end to end); threshold-based sampling (silently skips small-gradient
+  tensors); a `REAL=long double` build (new build mode, not portable,
+  no CUDA analogue).
+- **Impact:** test methodology only; no code contracts, formats or tolerances
+  change. P3.7 (golden autograd, per-tensor rel-L2 < 1e-4) remains the exact
+  backstop for small gradients. CUDA/MPI builds use the §10 cross-version
+  equivalence protocol, not this check. The per-op FD tests (P3.1–P3.4) keep
+  their 2-point differences; they all pass, and switch to this stencil only
+  if one of them needs it. The ROADMAP §10 "Gradcheck" row still names the
+  old method and should be updated to match.
