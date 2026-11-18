@@ -253,7 +253,7 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   under the same no-overlap rule. Its LayerNorm reductions may reorder sums,
   which the §10 equivalence tolerances allow.
 
-## 2026-11-18: Model API types (P2.5), needs team confirmation
+## 2026-11-18: Model API types (P2.5), APPROVED 2026-11-18 (option A)
 
 - **Change** relative to the ROADMAP §8 Model API sketch:
   1. **Loss type:** `model_forward` returns **`double`** (the sketch says
@@ -320,3 +320,18 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   tests and `make dist` never use it.
 - **Impact:** P3.7 extends `gen_golden.py` with gradients and AdamW steps on
   the same cases. CUDA/MPI builds compare against the same files.
+
+## 2026-11-18: Model API types approved (resolves the P2.5 open question)
+
+- **Change:** the team approved option A. `model_forward` returns `double`
+  and `model_logits` returns `const real_t*`, as implemented in P2.5. These
+  signatures supersede the `float` / `const float*` sketch in ROADMAP §8.
+- **Reason:** the P3.6 gradient check (§10: central differences, ε = 1e-5,
+  rel err < 1e-6, `REAL=double`) needs a double-precision loss. A `float`
+  loss would give about 1e-2 error in the numeric gradients. In the
+  double build the logits are doubles, so the pointer must be `real_t*`.
+  Option C (raising ε) was rejected: it would loosen the §10 test.
+- **Impact:** none on the float builds' values, training, `log.csv`,
+  checkpoints or file formats. CUDA/MPI implement the same signatures:
+  `model_forward` returns a host double, and `model_logits` is a device
+  pointer (generation copies the last-position row to the host).
