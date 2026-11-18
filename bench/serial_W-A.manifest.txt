@@ -1,0 +1,40 @@
+# tslm bench manifest (ROADMAP §12): latest run appended to bench/serial_W-A.csv
+# date_utc: 2026-11-18T13:31:59Z
+# git: e777b9f33cc2
+# build: backend=cpu comm=serial real=float mode=release
+# compiler: g++ 13.3.0
+# cxxflags: -std=c++17 -O3 -march=native -Wall -Wextra -Wpedantic
+# device: cpu
+# cpu: Intel(R) Xeon(R) Processor @ 2.30GHz
+# cores_online: 4
+# ram_mb: 16088
+# world_size: 1
+# prewarm: yes (927666656 bytes of data/train.bin read in 0.11 s)
+# machine_id: Intel(R) Xeon(R) Processor @ 2.30GHz | 4 cores | 16 GB
+vocab_size=10000
+max_seq_len=256
+n_layer=2
+n_embd=128
+n_head=4
+tie_embeddings=1
+run_name=small
+out_dir=runs
+train_data=data/train.bin
+val_data=data/val.bin
+seed=1337
+batch_size=32
+seq_len=256
+max_steps=50
+warmup_steps=200
+lr=0.001
+min_lr_frac=0.10000000000000001
+weight_decay=0.10000000000000001
+beta1=0.90000000000000002
+beta2=0.94999999999999996
+adam_eps=1e-08
+grad_clip=1
+log_every=10
+eval_every=100
+val_batches=20
+ckpt_every=250
+resume=

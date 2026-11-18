@@ -1083,3 +1083,46 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **DoD status: pending.** The pilot needs two human raters and samples from
   a trained checkpoint (the P5.2 `small` run, still to be executed). No
   scores have been entered, and none were produced by the assistant.
+
+## 2026-11-18: Bench app, prewarm rule and first serial benchmarks (P7.1)
+
+- **What is timed:** `bin/bench` times exactly the training step.
+  `train_step()` was extracted from `train_run` and is shared by both.
+  This was verified behaviour-preserving: identical smoke values and
+  final-params checksum `0d80323551e3bb51`.
+- **Per run:**
+  - prewarm the training token file;
+  - fresh model from the seed;
+  - `max_steps` steps, the first 3 discarded;
+  - one CSV row in the frozen §12 columns.
+- **Definitions:**
+  - `steps` = total steps run (warmup included). All versions use the same
+    definition, so speedups compare like with like.
+  - `median_step_ms` / `mean_step_ms` are taken over the measured steps.
+  - `tok_per_s` = global tokens per step / median step.
+  - Phase columns are per-step means over the measured steps.
+  - `peak_mem_MB` = process peak RSS (`ru_maxrss`).
+  - `machine_id` = "CPU model | cores | RAM", with commas replaced.
+- **Prewarm adopted** (the ROADMAP P7.1 proposal): a §12 line was added
+  saying every version reads the whole token file once before the first
+  step. The read is recorded in `bench/<version>_<workload>.manifest.txt`.
+- **Results** (`bench/serial_W-C.csv`, `bench/serial_W-A.csv`):
+  - Conditions: clean release build of commit `e777b9f` on this container
+    (Intel Xeon @ 2.30GHz, 4 cores, 16 GB); 3 runs each.
+
+  | Workload | median_step_ms per run | max deviation from mean | range | tok/s |
+  |---|---|---|---|---|
+  | W-C (smoke, 200 steps, B=4, T=32) | 19.851 / 20.287 / 20.078 | 1.10% | 2.20% | 6309–6448 |
+  | W-A (small, 50 steps, B=32, T=256) | 3640.001 / 3623.407 / 3567.132 | 1.19% | 2.04% | 2251–2297 |
+
+  - DoD "reproducible within ±3% across 3 runs" is met for both.
+  - W-A per-step phase means: forward about 1.40 s, backward 2.16–2.24 s,
+    optimizer about 7.6 ms, data about 0.13 ms.
+  - The serial attention computes only the causal lower triangle (see
+    `docs/PROFILE.md`), so a version that computes the full tile does about
+    2× the attention arithmetic. Comparisons must say which it uses.
+  - W-B (base) was not run; the §14 gate requires only W-A and W-C.
+- **Host note:** this container moved between CPUs during the session. It
+  was "Xeon @ 2.10GHz" until about 05:30 UTC and "Xeon @ 2.30GHz with
+  AVX-512" from about 12:00 UTC. These benchmarks are on the 2.30GHz host
+  only, from a build compiled there.
