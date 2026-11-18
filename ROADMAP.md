@@ -360,7 +360,7 @@ for step in 1..max_steps:
 | Golden (PyTorch, offline) | `dump_init` writes init weights + a fixed batch; `dev_only/gen_golden.py` builds an architecturally identical PyTorch model in float64, writes loss, a logits slice, and every tensor's gradient to `tests/golden/*.bin`; C++ test loads them with **no Python at test time** | float32 serial vs float64 golden: loss rel err < 1e-5; grads per-tensor rel-L2 err < 1e-4; after 5 AdamW steps (golden lr 1e-3) params rel-L2 < 1e-4, with each `qkv_b` key slice instead bounded by `max|value| ≤ steps·lr` (structural zero, see `docs/DECISIONS.md`, 2026-11-18, P4.1) |
 | Init loss | Fresh `base` model on real data | initial loss within ±0.15 of ln(10000) ≈ 9.21 |
 | Overfit | `smoke` config, one fixed batch, 300 steps | loss < 0.1 |
-| Smoke training | `smoke` on ~1M-token subset, 200 steps | val loss decreases monotonically (coarsely) and ends below 6.0; run time under 1 min |
+| Smoke training | `smoke` on a 100k-token real subset committed as `tests/fixtures/smoke_*.bin` (was ~1M; see `docs/DECISIONS.md`, 2026-11-18, P4.5), 200 steps | val loss decreases monotonically (coarsely) and ends below 6.0; run time under 1 min |
 | Determinism | Same seed, same binary, 2 runs × 20 steps | log loss values bit-identical; final param checksum identical |
 | Resume | Train 20 steps = train 10 + checkpoint + resume 10 | bit-identical params |
 | Causality | Perturb token at position `t`; logits at positions `< t` | exactly unchanged |

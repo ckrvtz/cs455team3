@@ -10,7 +10,8 @@ are in [`CLAUDE.md`](CLAUDE.md).
 preparation, loader), the full forward and backward passes, and the
 full-model gradient check, the AdamW optimizer with its LR schedule, and the
 training loop (`train_serial`) with validation and checkpoint/resume are
-done. Generation and benchmarking are not built yet.
+done (Phases 0–4); `make test` includes the overfit and smoke training tests.
+Generation and benchmarking are not built yet.
 
 ## Requirements
 
@@ -24,7 +25,7 @@ done. Generation and benchmarking are not built yet.
 
 ```bash
 make                     # release build: -O3 -march=native, apps in bin/
-make test                # build and run every unit test (a few seconds)
+make test                # build and run every test, incl. overfit + smoke training (~20 s)
 make debug               # -O0 -g with AddressSanitizer + UBSan, then run all tests
 make test REAL=double    # double-precision build (used for gradient checks)
 make dist                # submission tarball dist/tslm.tar.gz (fails if any .py remains)
@@ -146,7 +147,7 @@ The PyPI `torch` wheel for Linux also installs about 2.5 GB of CUDA libraries.
 include/tslm/   public headers (ops.h, model.h, layout.h, backend.h, comm.h, ...)
 src/            library: common/ backend/ comm/ ops/ model/ optim/ data/ train/
 apps/           command-line tools (thin main()s)
-tests/          unit tests (test_*.cpp) and golden data
+tests/          unit tests (test_*.cpp), golden data, and a 208 KB real-data fixture (tests/fixtures/)
 configs/        presets       scripts/  data download
 docs/           DECISIONS.md (design decision log), PROFILE.md (serial optimizations)
 dev_only/       offline Python for golden files; never built or shipped
