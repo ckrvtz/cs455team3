@@ -1309,3 +1309,41 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   - Default builds never reference the stubs.
 - **Kept:** the `build_config.h` guards stay until each phase lands. Each
   phase removes its own guard and replaces its stub.
+
+## 2026-11-18: P5.2 `small` run results; cross-machine bit-identity (evidence on the stale-build cause)
+
+- **Run:** executed by a teammate on an Intel Core i7-6820HQ (AVX2) with
+  g++ 16.2.1. `log.csv` and `manifest.txt` are committed in
+  `docs/runs/small_p52/`, with `curves.svg`. Details and tables are in
+  `docs/RUNS.md`.
+- **Results:**
+  - final val loss 2.6455 (ppl 14.1) after 2,400 steps (19.66M tokens);
+  - val decreased at every one of the 24 evaluations;
+  - no non-finite values.
+- **Plateau criterion** (fixed before the run): criteria 1 and 3 met;
+  criterion 2 (train − val gap within ±0.1) **not met**, +0.106.
+  - The gap is val below train, and its train side is a mean of only 10
+    logged single-step losses. Both facts are recorded but do not change
+    the result.
+  - **The P5.2 DoD ("a loss plateau you can defend") is left to the team.**
+    Options:
+    - accept it with the caveat above;
+    - measure train loss properly with `evaluate()` on fixed training
+      batches from the final checkpoint;
+    - run longer on more data (P5.2 allows up to 50M tokens).
+- **Cross-machine bit-identity:** the 108 logged values for steps 1–260
+  (train loss, val loss, lr, grad norm) are identical, to all printed
+  digits, to the clean-clone verification run of P7.3. That run used a Xeon
+  @ 2.30GHz with AVX-512 and g++ 13.3.0, from a from-scratch build.
+- **Consequence for "Update to the stale-build correction":** that entry
+  attributed the release-float discrepancy to object files compiled for a
+  previous CPU. The bit-identity above shows that this code gives the same
+  results across a different CPU generation, ISA width (AVX2 vs AVX-512) and
+  compiler major version. That makes the CPU-change explanation much less
+  likely.
+  - The earlier explanation, an object left over from a mutation check (see
+    "Correction: release-float numbers recorded from a stale build"), is
+    again the more plausible one.
+  - Neither can be proven now. The corrected numbers and both safeguards
+    still stand: the clean-rebuild procedure, and the target stamp, which
+    still prevents mixing objects from different compilers or flags.

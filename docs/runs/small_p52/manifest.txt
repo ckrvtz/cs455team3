@@ -1,0 +1,42 @@
+# tslm run manifest (ROADMAP §9). '#' lines are metadata; the rest is the resolved config,
+# reloadable with --config <this file>.
+# date_utc: 2026-11-18T12:37:17Z
+# git: 1688a7fdf399
+# build: backend=cpu comm=serial real=float mode=release
+# compiler: g++ 16.2.1 20260819 (Red Hat 16.2.1-2)
+# cxxflags: -std=c++17 -O3 -march=native -Wall -Wextra -Wpedantic
+# device: cpu
+# cpu: Intel(R) Core(TM) i7-6820HQ CPU @ 2.70GHz
+# cores_online: 8
+# ram_mb: 15869
+# world_size: 1
+# model: L=2 C=128 NH=4 V=10000 max_T=256 tied=1 | params 1709568 (padded 1709568) | params/grads/m/v 6.5 MB each | activation arena 1241.8 MB for B=32 T=256 | device cpu
+# train_tokens: 19999905
+# steps_per_epoch: 2441
+vocab_size=10000
+max_seq_len=256
+n_layer=2
+n_embd=128
+n_head=4
+tie_embeddings=1
+run_name=small_p52
+out_dir=runs
+train_data=data/p52/train.bin
+val_data=data/p52/val.bin
+seed=1337
+batch_size=32
+seq_len=256
+max_steps=2400
+warmup_steps=200
+lr=0.001
+min_lr_frac=0.10000000000000001
+weight_decay=0.10000000000000001
+beta1=0.90000000000000002
+beta2=0.94999999999999996
+adam_eps=1e-08
+grad_clip=1
+log_every=10
+eval_every=100
+val_batches=20
+ckpt_every=250
+resume=

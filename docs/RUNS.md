@@ -6,9 +6,10 @@ unless it says so.
 
 ## P5.2: first `small` run (20M train tokens)
 
-**Status:** prepared and pilot-tested in this repo (see below); the full run
-is to be executed on a teammate machine or the cluster, then its `log.csv`
-is plotted and assessed here.
+**Status:** completed on a teammate machine (2026-11-18, results below).
+Final val loss 2.6455 (ppl 14.1). Plateau criterion: 2 of 3 met; criterion
+2 missed by 0.006. The verdict is pending team review. The P6.1/P6.3 checks
+need the run's `ckpt_latest.bin`.
 
 ### What it is
 
@@ -91,6 +92,46 @@ run on more data (up to the 50M tokens P5.2 allows), not a different
 reading of the curve. ROADMAP §10 expects roughly 2–3 nats for truncated
 serial runs; a loss stuck near 6–7 would be a failure.
 
-### Results
+### Results (run completed 2026-11-18)
 
-Pending: to be filled in from the returned `log.csv`.
+- **Files:** `docs/runs/small_p52/log.csv` and `manifest.txt` (as returned
+  by the teammate who ran it) and `curves.svg`
+  (`python3 dev_only/plot_log.py docs/runs/small_p52/curves.svg docs/runs/small_p52/log.csv`).
+- **Machine** (from the manifest): Intel Core i7-6820HQ @ 2.70GHz (AVX2, 8
+  logical cores, 1 used), 15.9 GB RAM, g++ 16.2.1 (Red Hat), release float
+  build. The git hash `1688a7fdf399` is a local commit that is not on the
+  shared branch.
+- **Data and config:** 19,999,905 train tokens (2,441 steps per epoch) and
+  `configs/small.cfg` as committed, i.e. 2,400 steps.
+- **Timing:** median step 3,948 ms and 2,075 tok/s (log rows from step 50
+  on). Not a benchmark: `log.csv` timings are interval means without the
+  §12 protocol.
+
+| Step | 100 | 200 | 300 | 500 | 1000 | 1500 | 1900 | 2000 | 2200 | 2400 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| val loss | 5.9065 | 4.2254 | 3.8845 | 3.4452 | 2.9691 | 2.7711 | 2.6934 | 2.6760 | 2.6582 | **2.6455** |
+| val ppl | 367.4 | 68.4 | 48.6 | 31.3 | 19.5 | 16.0 | 14.8 | 14.5 | 14.3 | **14.1** |
+
+**Plateau criterion** (as fixed before the run):
+
+| Criterion | Measured | Result |
+|---|---|---|
+| 1. val falls < 0.05 nats over steps 1900 → 2400 | 2.6934 → 2.6455: 0.0479 | met (margin 0.002) |
+| 2. mean train loss over the last 100 steps − final val within ±0.1 | 2.7516 − 2.6455 = +0.106 | **not met** (by 0.006) |
+| 3. no NaN/Inf; no val increase > 0.02 after step 500 | none; val decreased at every evaluation | met |
+
+Criterion 2 notes, recorded but not used to reinterpret the result:
+- **Sampling:** `log.csv` keeps one training loss every 10 steps. The "mean
+  over the last 100 steps" is therefore the mean of 10 single-step losses
+  (steps 2310–2400, range 2.563–2.860), not of all 100 steps.
+- **Direction:** the gap is val *below* train, the opposite of overfitting.
+
+Whether the run is a defensible plateau (P5.2 DoD) is left to the team. A
+more precise train-loss measure would be `evaluate()` over fixed training
+batches using the final checkpoint.
+
+**Cross-machine reproducibility:** steps 1–260 of this run match the
+clean-clone verification run (Xeon @ 2.30GHz with AVX-512, g++ 13.3.0,
+2026-11-18, P7.3), bit for bit in the printed digits. That is 108 logged
+values (train loss, val loss, lr, grad norm), all identical to 9 significant
+digits.
