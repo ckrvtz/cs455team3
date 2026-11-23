@@ -1606,3 +1606,8 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
   - Phase D: `dev_init(local_rank)` already maps ranks to devices.
   - **The CUDA tests fail until B0.3:** most tests still pass host memory
     to ops (B0.3 migrates them), and every op aborts until its B1–B4 task.
+- **CLAUDE.md §3 updated** (on request, same day): the Phase B command
+  block now describes the B0.2 build as it exists, including the debug flags
+  (`-G` without `-lineinfo`), the `bin/cuda-*` directories, the profile
+  refusal, the stamp and `COMPUTE_SANITIZER`. It marks `make equiv` as not
+  implemented yet (B0.5).

@@ -74,20 +74,24 @@ make MODE=profile         # dev-only gprof build (scripts/profile.sh)
 make COMM=mpi             # Phase C; both BACKEND=cuda COMM=mpi: Phase D (stubs until then)
 ```
 
-Phase B (CUDA). These are planned and implemented in B0.2; until then `make BACKEND=cuda` stops at the toolchain check or the stub:
+Phase B (CUDA). The build plumbing landed in B0.2 (compile-checked; GPU verification pending). Every op still aborts with `not implemented: <op>` until its B1–B4 task, and the CUDA tests pass only after B0.3 (backend-agnostic tests) plus the kernels:
 
 ```
-make BACKEND=cuda                    # CUDA build -> bin/cuda-float/train_cuda, ...
-make BACKEND=cuda test               # the whole suite + test_equiv_ops on the GPU
-make BACKEND=cuda REAL=double test   # double kernels; runs the gradcheck
-make BACKEND=cuda MODE=debug         # -G -lineinfo, with a device sync after every launch
-make BACKEND=cuda sanitize           # tests under compute-sanitizer (memcheck; racecheck/synccheck on equivalence)
-make equiv                           # serial vs CUDA, ROADMAP §10 cross-version protocol (B0.5)
+make BACKEND=cuda                    # CUDA build -> bin/cuda-float/train_cuda, bin/cuda-float/<app>
+make BACKEND=cuda test               # the whole suite (+ test_equiv_ops from B0.4) on the GPU
+make BACKEND=cuda REAL=double test   # double kernels -> bin/cuda-double/; runs the gradcheck
+make BACKEND=cuda MODE=debug         # nvcc -O0 -g -G (no -lineinfo: -G overrides it), device sync after every launch; host code without ASan -> bin/cuda-debug-float/
+make BACKEND=cuda sanitize           # every test binary under compute-sanitizer --tool memcheck (racecheck/synccheck on equivalence: B0.4/B5.3)
+make equiv                           # serial vs CUDA, ROADMAP §10 cross-version protocol (B0.5; not implemented yet)
 ```
 
-Variables: `CUDA_ARCH` (default `sm_50`), `NVCC` (nvcc 12.9), `MPICXX`.
+- CUDA apps never share `bin/` with the serial apps: `bin/cuda-<real>/` (release), `bin/cuda-<mode>-<real>/` otherwise.
+- `MODE=profile` is serial-only (gprof); CUDA profiling uses nsys/ncu (`docs/PROFILE_CUDA.md`).
+- The target stamp includes the nvcc version, `CUDA_ARCH` and the nvcc flags, so a toolkit or target change rebuilds everything.
 
-Release flags: `-O3 -march=native -std=c++17 -Wall -Wextra -Wpedantic`. CUDA adds `nvcc -std=c++17 -O3 -arch=$(CUDA_ARCH) -lineinfo -Wno-deprecated-gpu-targets`, linked with `-lcublas -lcudart`. Code must compile **warning-free**. If a command above is not yet implemented, say so; do not invent a substitute silently.
+Variables: `CUDA_ARCH` (default `sm_50`), `NVCC` (nvcc 12.9; a missing one stops make with one message), `COMPUTE_SANITIZER` (default `compute-sanitizer`), `MPICXX`.
+
+Release flags: `-O3 -march=native -std=c++17 -Wall -Wextra -Wpedantic`. CUDA compiles `src/*/*_cuda.cu` with `nvcc -std=c++17 -O3 -arch=$(CUDA_ARCH) -lineinfo -Wno-deprecated-gpu-targets -Xcompiler -Wall,-Wextra`; host `.cpp` files keep `$(CXX)` and the flags above; the link (by `$(CXX)`) adds `-lcublas -lcudart` with an rpath to the toolkit's `lib64`. Code must compile **warning-free**. If a command above is not yet implemented, say so; do not invent a substitute silently.
 
 ---
 
