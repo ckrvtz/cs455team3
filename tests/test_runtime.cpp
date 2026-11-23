@@ -53,7 +53,11 @@ TEST(dev_malloc_alignment_and_zero_size) {
         dev_free(p);
     }
     dev_free(nullptr);  // allowed
+#if defined(TSLM_BACKEND_CUDA)
+    EXPECT_TRUE(std::strstr(dev_name(), "(sm_") != nullptr);  // "<GPU> (sm_XY), driver ..., CUDA runtime ..."
+#else
     EXPECT_TRUE(std::strcmp(dev_name(), "cpu") == 0);
+#endif
 }
 
 TEST(memset_and_copies_round_trip) {

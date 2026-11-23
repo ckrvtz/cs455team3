@@ -172,9 +172,14 @@ BenchRow run_bench(const Config& cfg, BenchOptions* opt) {
     row.bwd_ms = phase_sum[int(Phase::Bwd)] / n;
     row.comm_ms = phase_sum[int(Phase::Comm)] / n;
     row.opt_ms = phase_sum[int(Phase::Opt)] / n;
+#if defined(TSLM_BACKEND_CUDA)
+    // CUDA: device memory requested through dev_malloc (ROADMAP_CUDA §4.4, D-B8).
+    row.peak_mem_MB = double(dev_peak_bytes()) / (1024.0 * 1024.0);
+#else
     struct rusage ru;
     CHECK(getrusage(RUSAGE_SELF, &ru) == 0, "getrusage failed");
     row.peak_mem_MB = double(ru.ru_maxrss) / 1024.0;  // Linux: kilobytes
+#endif
     return row;
 }
 

@@ -21,7 +21,8 @@ are in [`CLAUDE.md`](CLAUDE.md).
 - **Pending:**
   - the two-rater scoring pilot (P6.3);
   - the Serial Complete review (P5.3).
-- **Next:** the CUDA build (`ROADMAP_CUDA.md`).
+- **Next:** the CUDA build (`ROADMAP_CUDA.md`). Its build plumbing is in
+  place (B0.2); the kernels are not written yet.
 
 ## Quick start (clean clone to a trained smoke model)
 
@@ -134,6 +135,7 @@ CPUs.
 - Linux or macOS, `g++` with C++17, GNU `make`
 - `curl` and `sha256sum` (or `shasum`) for the data download
 - About 3 GB of disk for the full dataset
+- Optional, for the CUDA build: the CUDA toolkit 12.x (`nvcc`, cuBLAS)
 - Optional, only to regenerate golden test files: Python 3 with
   `dev_only/requirements.txt`. Nothing in the build or tests uses Python.
 
@@ -153,13 +155,24 @@ make clean               # remove build/, bin/, dist/
 - **Build directories:** each configuration builds in its own
   `build/<mode>-<backend>-<comm>-<real>/`, so switching builds never mixes
   object files.
-- **Not available yet:** `make BACKEND=cuda` (Phase B) and `make COMM=mpi`
-  (Phase C) stop with one clear message.
-  - **Toolchain missing:** the message names the tool (`nvcc` or `mpicxx`,
-    selectable with `NVCC=` / `MPICXX=`).
-  - **Toolchain present:** the build stops at the stubs
-    `src/ops/ops_cuda.cu` / `src/comm/comm_mpi.cpp`, which list what each
-    phase must implement (see also [`docs/HANDOFF.md`](docs/HANDOFF.md)).
+- **CUDA build (Phase B, in progress):** needs the CUDA toolkit 12.x
+  (`nvcc`; 13.x cannot target the sm_50 reference GPU).
+
+  ```bash
+  make BACKEND=cuda                 # apps in bin/cuda-float/ (trainer: train_cuda)
+  make BACKEND=cuda REAL=double     # bin/cuda-double/
+  make BACKEND=cuda MODE=debug      # nvcc -G, device sync after every kernel launch; bin/cuda-debug-float/
+  ```
+
+  - Variables: `NVCC=/path/to/nvcc`, `CUDA_ARCH=` (default `sm_50`).
+  - **No kernels yet:** every op aborts with `not implemented: <op>` until
+    its ROADMAP_CUDA task lands, so the CUDA binaries do not train yet.
+  - These builds have been compiled only so far (on a machine without a
+    GPU); the CUDA tests come with the kernels.
+- **Not available yet:** `make COMM=mpi` (Phase C) stops with one clear
+  message. A missing `nvcc` or `mpicxx` is named in the message (select
+  them with `NVCC=` / `MPICXX=`); with `mpicxx` present the build stops at
+  the stub `src/comm/comm_mpi.cpp`.
 
 ### Gradient check
 

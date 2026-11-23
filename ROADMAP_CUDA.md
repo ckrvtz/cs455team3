@@ -265,7 +265,8 @@ bench/cuda_W-*.csv               CUDA benchmark results
     `bin/<backend>-<real>/` directory; serial stays in `bin/`.
   - `make BACKEND=cuda REAL=double` must build: `real_t = double` kernels,
     used by the gradcheck.
-  - `make BACKEND=cuda MODE=debug` uses `-G -lineinfo`; ASan is not mixed
+  - `make BACKEND=cuda MODE=debug` uses `-G` (it overrides `-lineinfo`, so
+    that flag is dropped: DECISIONS 2026-11-23); ASan is not mixed
     with CUDA.
   - `make BACKEND=cuda sanitize` runs each test binary under
     `compute-sanitizer --tool memcheck`.

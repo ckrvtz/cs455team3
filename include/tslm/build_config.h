@@ -20,13 +20,11 @@
 #error "tslm: define exactly one of TSLM_REAL_FLOAT / TSLM_REAL_DOUBLE (use the Makefile: REAL=float|double)"
 #endif
 
-// ---- combinations not supported in the current phase (Phase A) ------------
-// Phase B adds BACKEND=cuda, Phase C adds COMM=mpi, Phase D adds both.
+// ---- combinations not supported in the current phase (Phase B) ------------
+// Phase B added BACKEND=cuda (B0.2); Phase C adds COMM=mpi, Phase D adds both.
 // Each phase removes the corresponding guard when its implementation lands.
 #if defined(TSLM_BACKEND_CUDA) && defined(TSLM_COMM_MPI)
 #error "tslm: BACKEND=cuda COMM=mpi is not supported yet (Phase D)"
-#elif defined(TSLM_BACKEND_CUDA)
-#error "tslm: BACKEND=cuda is not supported yet (Phase B)"
 #elif defined(TSLM_COMM_MPI)
 #error "tslm: COMM=mpi is not supported yet (Phase C)"
 #endif

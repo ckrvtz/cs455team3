@@ -1526,3 +1526,83 @@ Format: date, change, reason, impact on other builds (CUDA / MPI / CUDA+MPI).
 - **Deferred to B0.3:** the test helpers duplicated across 4–6 test files
   (`tmp_dir`, `ensure_comm`, `read_file`, `write_tokens`) move into a shared
   test header when B0.3 touches those files for `devbuf.h`.
+
+## 2026-11-23: B0.2 CUDA build plumbing
+
+- **Change** (ROADMAP_CUDA.md §4.1–§4.4, B0.2):
+  - **Build guard:** `build_config.h` no longer rejects `BACKEND=cuda`.
+    `BACKEND=cuda COMM=mpi` (Phase D) and `COMM=mpi` (Phase C) still
+    `#error`.
+  - **Error macros:** `check.h` implements `CUDA_CHECK` and `CUBLAS_CHECK`
+    for CUDA builds. They report through `check_fail`, in the same format as
+    `CHECK`. They expand to `cudaGetErrorString`/`cublasGetStatusString`, so
+    `check.h` itself includes no CUDA header. Non-CUDA builds keep the
+    `static_assert` stubs, and `CUBLAS_CHECK` gains one too.
+  - **`src/backend/backend_cuda.cu`:** `cudaMalloc`, `cudaMemset` and
+    `cudaMemcpy`, all on the default stream.
+    - `dev_init` selects device `local_rank % count`, creates the context,
+      the cuBLAS handle (default stream, `CUBLAS_DEFAULT_MATH`, host pointer
+      mode) and an 8 KiB reduction scratch.
+    - If `dev_init` was not called, the first `dev_*` call initialises
+      device 0 the same way. The `dev_init` checks are the CPU backend's.
+    - `dev_peak_bytes` counts `dev_malloc` requests through a host-side
+      pointer-to-size table. The internal scratch is not counted.
+  - **`src/backend/cuda_internal.h`:** the only way ops reach the cuBLAS
+    handle and the scratch.
+  - **Per-family stubs:** `src/ops/ops_cuda.cu` is replaced by the seven
+    per-family files (D-B11). Each has the exact `ops.h` signatures and aborts
+    with `not implemented: <op> (CUDA build; ROADMAP_CUDA.md task Bx.y)`.
+  - **`src/ops/cuda_common.cuh`:** `CUDA_LAUNCH_CHECK()` (it also
+    synchronises in `MODE=debug`), `ceil_div`, and the not-implemented abort.
+    The reductions arrive with B1.2.
+  - **Makefile:**
+    - nvcc flags `-std=c++17 -arch=$(CUDA_ARCH) -Wno-deprecated-gpu-targets
+      -Xcompiler -Wall,-Wextra`, plus `-O3 -lineinfo` in release.
+    - Dependency files from nvcc (`-MMD -MP -MT`).
+    - The link is done by `$(CXX)` with `-lcublas -lcudart` and an rpath to
+      the toolkit's `lib64`.
+    - The target stamp also hashes `nvcc --version`, `CUDA_ARCH` and the
+      nvcc flags.
+    - CUDA apps go to `bin/cuda-<real>/` in release and
+      `bin/cuda-<mode>-<real>/` otherwise; serial stays in `bin/`.
+    - New `make BACKEND=cuda sanitize` target: memcheck over every test
+      binary.
+    - CUDA manifests record `# nvcc:` and `# nvccflags:`.
+  - **`bench`:** `peak_mem_MB` is `dev_peak_bytes()/2^20` in CUDA builds.
+    CPU builds are unchanged (RSS).
+  - **`dev_name()` in CUDA builds:** for example `Quadro M2000M (sm_50),
+    driver 580.178.04 (CUDA 13.0), CUDA runtime 12.9`. The driver string is
+    read from `/proc/driver/nvidia/version`, because NVML is not an approved
+    dependency. It reads `driver unknown` if that file is missing.
+  - **Tests:**
+    - `test_build` `phase_a_is_cpu_serial` becomes
+      `phase_b_backends_serial_comm`: the backend matches the build, and
+      comm is serial.
+    - `test_runtime` expects `dev_name()` to contain `(sm_` in CUDA builds
+      and to equal `cpu` otherwise.
+- **Choices within the roadmap:**
+  - **`MODE=debug` (CUDA) uses `-G` without `-lineinfo`.** With both flags,
+    nvcc warns that `-G` overrides `-lineinfo`, and the build must be
+    warning-free. ROADMAP_CUDA §4.2 says `-G -lineinfo`.
+  - **No ASan in CUDA builds:** host code in CUDA debug builds is `-O0 -g`
+    without ASan/UBSan, as §4.2 says.
+  - **`MODE=profile` with `BACKEND=cuda` stops with a message:** gprof is
+    serial-only, and CUDA profiling uses nsys/ncu.
+- **Verification so far:** compile-only.
+  - Built in the GPU-less development container (Intel Xeon @ 2.30GHz) with
+    Ubuntu's `nvidia-cuda-toolkit` package, nvcc 12.0.140, not the pinned
+    12.9.
+  - `make BACKEND=cuda`, `REAL=double` and `MODE=debug` all build every app
+    with no warnings. The 30 test programs also compile.
+  - A binary there stops at `dev_init` with "CUDA error 100: no
+    CUDA-capable device is detected".
+  - A scratch program linked against the CUDA library aborts with
+    `not implemented: gelu_forward (CUDA build; ROADMAP_CUDA.md task B1.1)`.
+  - **NOT RUN ON A GPU:** B0.2 stays open until it is built and run on the
+    D-B1 machine with nvcc 12.9.
+- **Impact:**
+  - CPU builds: flags, stamp and objects are unchanged. Only `test_build`
+    and `test_runtime` changed, and they are backend-aware.
+  - Phase D: `dev_init(local_rank)` already maps ranks to devices.
+  - **The CUDA tests fail until B0.3:** most tests still pass host memory
+    to ops (B0.3 migrates them), and every op aborts until its B1–B4 task.

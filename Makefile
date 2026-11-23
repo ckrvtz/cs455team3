@@ -4,8 +4,11 @@
 #   make test                  build + run every tests/test_*.cpp
 #   make debug                 -O0 -g ASan/UBSan build, then run the tests under it
 #   make test REAL=double      double-precision build (gradient checks)
-#   make BACKEND=cuda          Phase B   | make COMM=mpi  Phase C | both: Phase D
-#                              (stubs until then; NVCC=/MPICXX= select the tools)
+#   make BACKEND=cuda          CUDA build (Phase B) -> bin/cuda-float/train_cuda, bin/cuda-float/<app>, ...
+#   make BACKEND=cuda MODE=debug   nvcc -G and a device sync after every kernel launch
+#   make BACKEND=cuda sanitize     run the tests under compute-sanitizer --tool memcheck
+#   make COMM=mpi              Phase C | BACKEND=cuda COMM=mpi: Phase D (stubs until then)
+#                              NVCC=, CUDA_ARCH= (default sm_50), MPICXX= select the tools
 #   make dist                  submission tarball (fails if Python files remain)
 #   make MODE=profile          dev-only gprof build (release flags + -pg) -> bin/profile-float/
 #   make clean
@@ -42,12 +45,12 @@ MPICXX   ?= mpicxx
 # Phase B/C/D toolchains (P7.5). BACKEND=cuda compiles src/*/*_cuda.cu with
 # $(NVCC); COMM=mpi compiles everything with the MPI wrapper $(MPICXX). A
 # missing tool stops make here with one message, before anything compiles.
-# With the tools present, the build still stops at the stubs and the guards
-# in include/tslm/build_config.h until those phases are implemented.
+# With the tools present, COMM=mpi still stops at the stub and the guards in
+# include/tslm/build_config.h until Phases C and D are implemented.
 ifneq ($(if $(MAKECMDGOALS),$(filter-out clean dist,$(MAKECMDGOALS)),all),)
 ifeq ($(BACKEND),cuda)
 ifeq ($(shell command -v $(NVCC) 2>/dev/null),)
-$(error BACKEND=cuda needs the CUDA compiler '$(NVCC)' (CUDA toolkit), which was not found; set NVCC=/path/to/nvcc. The CUDA backend itself is Phase B and not implemented yet: see src/ops/ops_cuda.cu and docs/HANDOFF.md)
+$(error BACKEND=cuda needs the CUDA compiler '$(NVCC)' (CUDA toolkit 12.x; 13.x cannot target sm_50), which was not found; set NVCC=/path/to/nvcc)
 endif
 endif
 ifeq ($(COMM),mpi)
@@ -75,6 +78,11 @@ else ifeq ($(MODE),profile)
 # gprof instrumentation. Never used by make test or make dist.
 OPTFLAGS := -O3 -march=native -pg
 LDSAN    := -pg
+else ifeq ($(BACKEND),cuda)
+# CUDA debug: no ASan/UBSan (they are not mixed with the CUDA runtime; use
+# `make BACKEND=cuda sanitize` for device memory errors).
+OPTFLAGS := -O0 -g -fno-omit-frame-pointer
+LDSAN    :=
 else
 OPTFLAGS := -O0 -g -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
 LDSAN    := -fsanitize=address,undefined
@@ -83,6 +91,33 @@ endif
 CXXFLAGS := $(CXXSTD) $(OPTFLAGS) $(WARN)
 LDFLAGS  := $(LDSAN)
 LDLIBS   :=
+
+# ---- CUDA (BACKEND=cuda; ROADMAP_CUDA.md §4.2, D-B1, D-B4)
+# nvcc compiles src/*/*_cuda.cu; host .cpp files keep $(CXX) and the flags
+# above. No --use_fast_math (D-B4). Release keeps -lineinfo for profilers;
+# MODE=debug uses -G (device debug info, which overrides -lineinfo: nvcc warns
+# if both are given) and TSLM_CUDA_DEBUG_SYNC, which makes every kernel
+# launch check synchronise (src/ops/cuda_common.cuh). Apps and tests are
+# linked by $(CXX) against the toolkit's shared cuBLAS and runtime, with an
+# rpath to the toolkit's lib64 so the binaries run without LD_LIBRARY_PATH.
+CUDA_ARCH ?= sm_50
+comma     := ,
+ifeq ($(BACKEND),cuda)
+ifeq ($(MODE),profile)
+$(error MODE=profile is the serial gprof build; profile CUDA builds with nsys/ncu (docs/PROFILE_CUDA.md))
+endif
+NVCCFLAGS := -std=c++17 -arch=$(CUDA_ARCH) -Wno-deprecated-gpu-targets -Xcompiler -Wall,-Wextra
+ifeq ($(MODE),debug)
+NVCCFLAGS += -O0 -g -G -DTSLM_CUDA_DEBUG_SYNC
+else
+NVCCFLAGS += -O3 -lineinfo
+endif
+CUDA_HOME   ?= $(patsubst %/bin/,%,$(dir $(realpath $(shell command -v $(NVCC) 2>/dev/null))))
+CUDA_LIBDIR := $(wildcard $(CUDA_HOME)/lib64)
+LDLIBS      += $(if $(CUDA_LIBDIR),-L$(CUDA_LIBDIR) -Wl$(comma)-rpath$(comma)$(CUDA_LIBDIR)) -lcublas -lcudart
+NVCC_VERSION := $(shell $(NVCC) --version 2>/dev/null | grep -o 'release [0-9.]*, V[0-9.]*')
+endif
+COMPUTE_SANITIZER ?= compute-sanitizer
 
 # ---- output locations
 CFG_TAG   := $(MODE)-$(BACKEND)-$(COMM)-$(REAL)
@@ -97,10 +132,19 @@ BUILD_DIR := build/$(CFG_TAG)
 # different CPU, compiler or flag set rebuilds everything. Defined here, before
 # that rule, because make expands rule prerequisites when it reads them.
 TARGET_ID    := $(shell $(CXX) $(CXXFLAGS) -dM -E -x c++ - </dev/null 2>/dev/null | cksum | cut -d' ' -f1)
+# CUDA builds add the nvcc version, CUDA_ARCH and the nvcc flags, so a
+# different toolkit or GPU target also rebuilds everything (ROADMAP_CUDA §4.2).
+ifeq ($(BACKEND),cuda)
+TARGET_ID    := $(TARGET_ID) $(shell $(NVCC) --version 2>/dev/null | cksum | cut -d' ' -f1) $(NVCCFLAGS)
+endif
 TARGET_STAMP := $(BUILD_DIR)/target.stamp
-# The default release float build puts apps in bin/ (as ROADMAP §4.1 names
-# them); every other mode/precision gets its own bin/<mode>-<real>/.
-ifeq ($(MODE)-$(REAL),release-float)
+# The default release float CPU build puts apps in bin/ (as ROADMAP §4.1
+# names them); every other mode/precision gets its own bin/<mode>-<real>/.
+# CUDA builds never share a directory with the CPU apps (ROADMAP_CUDA §4.2):
+# bin/cuda-<real>/ for release, bin/cuda-<mode>-<real>/ otherwise.
+ifeq ($(BACKEND),cuda)
+BIN_DIR := bin/cuda-$(if $(filter release,$(MODE)),,$(MODE)-)$(REAL)
+else ifeq ($(MODE)-$(REAL),release-float)
 BIN_DIR := bin
 else
 BIN_DIR := bin/$(MODE)-$(REAL)
@@ -135,7 +179,7 @@ APP_BINS := $(foreach s,$(APP_SRCS),$(BIN_DIR)/$(if $(filter apps/train.cpp,$(s)
 TEST_SRCS := $(wildcard tests/test_*.cpp)
 TEST_BINS := $(TEST_SRCS:tests/%.cpp=$(BUILD_DIR)/tests/%)
 
-.PHONY: all test debug dist clean
+.PHONY: all test debug sanitize dist clean
 # Keep intermediate objects (e.g. test .o files) so rebuilds stay incremental.
 .SECONDARY:
 .DEFAULT_GOAL := all
@@ -156,16 +200,30 @@ test: $(TEST_BINS)
 debug:
 	$(MAKE) MODE=debug all test
 
+# CUDA only: every test binary under compute-sanitizer memcheck (ROADMAP_CUDA
+# §4.2; racecheck/synccheck on the equivalence test come with B0.4/B5.3).
+sanitize: $(TEST_BINS)
+	@if [ "$(BACKEND)" != cuda ]; then echo "make sanitize needs BACKEND=cuda (CPU builds: make debug)"; exit 1; fi
+	@command -v $(COMPUTE_SANITIZER) >/dev/null || { echo "make sanitize: '$(COMPUTE_SANITIZER)' not found (set COMPUTE_SANITIZER=)"; exit 1; }
+	@mkdir -p $(BUILD_DIR)/tests/tmp; export TSLM_TEST_TMPDIR=$(BUILD_DIR)/tests/tmp; \
+	pass=0; fail=0; failed=""; \
+	for t in $(TEST_BINS); do \
+	  echo "== $$t (memcheck)"; \
+	  if $(COMPUTE_SANITIZER) --tool memcheck --error-exitcode 99 ./$$t; then pass=$$((pass+1)); else fail=$$((fail+1)); failed="$$failed $$t"; fi; \
+	done; \
+	echo "== [$(CFG_TAG) memcheck] $$pass passed, $$fail failed"; \
+	if [ $$fail -ne 0 ]; then echo "FAILED:$$failed"; exit 1; fi
+
 # ---- build rules
 $(BUILD_DIR)/%.o: %.cpp $(TARGET_STAMP)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
-# nvcc gets the -D/-I flags but not g++'s -MMD/-MP/-march/warning flags;
-# Phase B adds its own flags (architecture, -O3) here.
+# nvcc gets the same -I/-D selection flags and its own NVCCFLAGS (above);
+# -MT names the object in the .d file (nvcc would write only its basename).
 $(BUILD_DIR)/%.o: %.cu $(TARGET_STAMP)
 	@mkdir -p $(dir $@)
-	$(NVCC) $(filter-out -MMD -MP,$(CPPFLAGS)) $(CXXSTD) -c $< -o $@
+	$(NVCC) $(CPPFLAGS) -MT $@ $(NVCCFLAGS) -c $< -o $@
 
 # ---- build facts for runs/<name>/manifest.txt (src/train/manifest.cpp only).
 # The git hash ("-dirty" if tracked files differ from HEAD, "unknown" outside a
@@ -174,7 +232,7 @@ $(BUILD_DIR)/%.o: %.cu $(TARGET_STAMP)
 # manifest.o depends on it.
 GIT_HASH    := $(shell h=$$(git rev-parse --short=12 HEAD 2>/dev/null) || h=unknown; \
                  if [ "$$h" != unknown ] && ! git diff --quiet HEAD -- 2>/dev/null; then h=$$h-dirty; fi; echo $$h)
-BUILD_INFO  := $(GIT_HASH) | $(CXX) $(CXXFLAGS)
+BUILD_INFO  := $(GIT_HASH) | $(CXX) $(CXXFLAGS)$(if $(NVCCFLAGS), | $(NVCC) $(NVCC_VERSION) $(NVCCFLAGS))
 BUILD_STAMP := $(BUILD_DIR)/build_info.txt
 
 # Skipped when the only goals are clean/dist (no build happens then).
@@ -185,6 +243,9 @@ endif
 MANIFEST_OBJ := $(BUILD_DIR)/src/train/manifest.o
 $(MANIFEST_OBJ): $(BUILD_STAMP)
 $(MANIFEST_OBJ): CPPFLAGS += -DTSLM_GIT_HASH='"$(GIT_HASH)"' -DTSLM_CXX='"$(CXX)"' -DTSLM_CXXFLAGS='"$(CXXFLAGS)"'
+ifeq ($(BACKEND),cuda)
+$(MANIFEST_OBJ): CPPFLAGS += -DTSLM_NVCC='"$(NVCC) $(NVCC_VERSION)"' -DTSLM_NVCCFLAGS='"$(NVCCFLAGS)"'
+endif
 
 $(LIB): $(LIB_OBJS)
 	@mkdir -p $(dir $@)

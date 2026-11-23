@@ -15,8 +15,9 @@
 //     wall times. tok_per_s = global tokens per step / (median_step_ms / 1000).
 //   - data_ms .. opt_ms: per-step MEANS of each phase over the measured
 //     steps (they sum to mean_step_ms up to untimed bookkeeping).
-//   - peak_mem_MB: peak resident set size of the process (getrusage
-//     ru_maxrss), host memory; CUDA builds will report device memory.
+//   - peak_mem_MB: CPU builds: peak resident set size of the process
+//     (getrusage ru_maxrss), host memory. CUDA builds: dev_peak_bytes() / 2^20,
+//     the high-water mark of device memory requested through dev_malloc.
 //
 // CSV (FROZEN, §12): header exactly BENCH_CSV_HEADER; a row per run.
 // Strings must not contain commas (machine_id is sanitized; version and git

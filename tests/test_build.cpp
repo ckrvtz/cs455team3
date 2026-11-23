@@ -22,9 +22,16 @@ TEST(build_description_matches_constants) {
     EXPECT_EQ(tslm::REAL_IS_DOUBLE, std::strcmp(tslm::BUILD_REAL, "double") == 0);
 }
 
-// Phase A: only the serial CPU build exists (other combos #error at build time).
-TEST(phase_a_is_cpu_serial) {
-    EXPECT_EQ(std::string(tslm::BUILD_BACKEND), std::string("cpu"));
+// Phase B: CPU and CUDA backends exist; MPI (Phases C/D) still #errors at
+// build time, so every build that compiles is serial.
+TEST(phase_b_backends_serial_comm) {
+    const std::string backend = tslm::BUILD_BACKEND;
+    EXPECT_TRUE(backend == "cpu" || backend == "cuda");
+#if defined(TSLM_BACKEND_CUDA)
+    EXPECT_EQ(backend, std::string("cuda"));
+#else
+    EXPECT_EQ(backend, std::string("cpu"));
+#endif
     EXPECT_EQ(std::string(tslm::BUILD_COMM), std::string("serial"));
 }
 

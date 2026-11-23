@@ -89,6 +89,10 @@ std::string build_info_text(int world_size) {
     s += std::string("# build: ") + build_description() + "\n";
     s += "# compiler: " TSLM_CXX " " __VERSION__ "\n";
     s += "# cxxflags: " TSLM_CXXFLAGS "\n";
+#if defined(TSLM_NVCC)
+    s += "# nvcc: " TSLM_NVCC "\n";
+    s += "# nvccflags: " TSLM_NVCCFLAGS "\n";
+#endif
     s += std::string("# device: ") + dev_name() + "\n";
     s += "# cpu: " + cpu_model_name() + "\n";
     std::snprintf(b, sizeof(b), "# cores_online: %ld\n# ram_mb: %.0f\n# world_size: %d\n", cores, ram_mb,
